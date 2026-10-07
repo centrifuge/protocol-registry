@@ -117,6 +117,29 @@ export function web3Gateway(
   };
 }
 
+/**
+ * The CID a hostname's dnslink names, read from public DNS (`_dnslink.<hostname>`, which Cloudflare
+ * keeps in step with the Web3 hostname). Needs no credentials, so a Worker that only generates never
+ * holds the token that can change it. DNS may trail a swap by its TTL; publishing reads the API.
+ */
+export async function dnslinkCid(
+  hostname: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<string | null> {
+  const response = await fetchImpl(
+    `https://cloudflare-dns.com/dns-query?name=_dnslink.${hostname}&type=TXT`,
+    { headers: { Accept: "application/dns-json" } },
+  );
+  if (!response.ok)
+    throw new Error(`DNS lookup of _dnslink.${hostname} failed: ${response.status}`);
+  const { Answer = [] } = (await response.json()) as { Answer?: { type: number; data: string }[] };
+  for (const answer of Answer) {
+    const match = answer.data.replace(/"/g, "").match(/^dnslink=\/ipfs\/(.+)$/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 /** Posts to the Slack channel behind an incoming webhook. Text is Slack mrkdwn. */
 export async function notifySlack(
   webhookUrl: string | undefined,

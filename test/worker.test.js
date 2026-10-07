@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, compareSource, verifyWebhookSignature } from "../src/io/github.ts";
-import { pointHostname, TipMovedError } from "../src/run.ts";
+import { dnslinkCid } from "../src/io/publish.ts";
+import { pointHostname, publishMode, TipMovedError } from "../src/run.ts";
 import { route } from "../src/webhook.ts";
 
 const config = { sourceRepo: "centrifuge/protocol-internal", sourceBranch: "live-v3.3" };
@@ -268,4 +269,52 @@ test("pointHostname is a no-op on a retry after the swap landed", async () => {
   const gateway = fakeGateway("new");
   await pointHostname({ gateway, hostnames }, { network: "mainnet", liveCid: "tip" }, "new");
   assert.deepEqual(gateway.state.sets, []);
+});
+
+test("publishing stays in shadow unless PUBLISH_MODE says otherwise and the credentials are there", () => {
+  const none = { pinataJwt: null, gateway: null };
+  const pinOnly = { pinataJwt: "jwt", gateway: null };
+  const both = { pinataJwt: "jwt", gateway: fakeGateway("tip") };
+
+  assert.equal(publishMode(undefined, both), "shadow");
+  assert.equal(publishMode("shadow", both), "shadow");
+  assert.equal(publishMode("true", both), "shadow", "an unknown value is shadow, not live");
+  assert.equal(publishMode("pin", pinOnly), "pin");
+  assert.equal(publishMode("live", both), "live");
+  // A stage without its credentials refuses rather than silently doing less
+  assert.throws(() => publishMode("pin", none), /PINATA_JWT is not set/);
+  assert.throws(() => publishMode("live", pinOnly), /CLOUDFLARE_API_TOKEN is not set/);
+});
+
+test("pointHostname cannot change a hostname without the Web3 token", async () => {
+  await assert.rejects(
+    () =>
+      pointHostname({ gateway: null, hostnames }, { network: "mainnet", liveCid: "tip" }, "new"),
+    /CLOUDFLARE_API_TOKEN is not set/,
+  );
+});
+
+test("dnslinkCid reads the CID from the _dnslink TXT record", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return {
+      ok: true,
+      json: async () => ({
+        Answer: [
+          {
+            type: 16,
+            data: '"dnslink=/ipfs/bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi"',
+          },
+        ],
+      }),
+    };
+  };
+
+  assert.equal(
+    await dnslinkCid("registry.centrifuge.io", fetchImpl),
+    "bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi",
+  );
+  assert.match(calls[0], /name=_dnslink\.registry\.centrifuge\.io&type=TXT/);
+  assert.equal(await dnslinkCid("x", async () => ({ ok: true, json: async () => ({}) })), null);
 });

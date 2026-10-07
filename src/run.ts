@@ -25,19 +25,48 @@ import {
   tagExists,
   type GitHub,
 } from "./io/github.ts";
-import { pinLayer, type Web3Gateway } from "./io/publish.ts";
+import { dnslinkCid, pinLayer, type Web3Gateway } from "./io/publish.ts";
 import { contractsInLayer, retiredRows, type NetworkOutcome } from "./report.ts";
 
 export interface RunConfig {
   gh: GitHub;
   bucket: R2Bucket;
-  gateway: Web3Gateway;
+  /** Null unless the Worker holds the Web3 hostname token, which only PUBLISH_MODE live needs. */
+  gateway: Web3Gateway | null;
   sourceRepo: string;
   hostnames: Record<Network, string>;
   abiBuild: { repo: string; workflow: string; ref: string };
   etherscanApiKey: string | null;
-  pinataJwt: string;
+  /** Null unless the Worker holds a Pinata JWT, which PUBLISH_MODE pin and live need. */
+  pinataJwt: string | null;
   log: Logger;
+}
+
+/**
+ * How far a publish run goes, from PUBLISH_MODE:
+ *   - shadow: generate and report what would be published (the default, and any unknown value)
+ *   - pin:    also pin the layer to IPFS, where nothing reads it until a hostname points at it
+ *   - live:   also point the registry hostname at it
+ * Each stage needs the credentials of what it does, and refuses without them rather than doing less.
+ */
+export type PublishMode = "shadow" | "pin" | "live";
+
+export function publishMode(
+  value: string | undefined,
+  config: Pick<RunConfig, "gateway" | "pinataJwt">,
+): PublishMode {
+  if (value !== "pin" && value !== "live") return "shadow";
+  if (!config.pinataJwt) throw new Error(`PUBLISH_MODE is ${value}, but PINATA_JWT is not set`);
+  if (value === "live" && !config.gateway) {
+    throw new Error(`PUBLISH_MODE is live, but CLOUDFLARE_API_TOKEN is not set`);
+  }
+  return value;
+}
+
+/** The CID a hostname serves: from the API when the Worker can publish, else from public DNS. */
+function liveCidOf(config: RunConfig, network: Network): Promise<string | null> {
+  const hostname = config.hostnames[network];
+  return config.gateway ? config.gateway.currentCid(hostname) : dnslinkCid(hostname);
 }
 
 export interface GenerateOptions {
@@ -181,7 +210,7 @@ export async function generateNetwork(
   const cache = r2LayerCache(config.bucket);
   const fetchLayer = async (cid: string) => slimLayer(await fetchRegistryFromIpfs(cid, { cache }));
 
-  const liveCid = await config.gateway.currentCid(config.hostnames[network]);
+  const liveCid = await liveCidOf(config, network);
   const tipCid = options.sourceCid ?? liveCid;
   const tipLayer = tipCid ? await fetchRegistryFromIpfs(tipCid, { cache }).catch(() => null) : null;
   const store = r2AbiStore(config.bucket);
@@ -273,7 +302,7 @@ export class TipMovedError extends Error {
 }
 
 async function assertTip(config: RunConfig, network: Network, expected: string | null) {
-  const current = await config.gateway.currentCid(config.hostnames[network]);
+  const current = await liveCidOf(config, network);
   if (current !== expected) throw new TipMovedError(network, expected, current);
 }
 
@@ -292,6 +321,7 @@ export async function pinNetwork(
     version?: string | null;
     deploymentInfo?: { gitCommit?: string };
   };
+  if (!config.pinataJwt) throw new Error("PINATA_JWT is not set");
   const { cid } = await pinLayer(config.pinataJwt, outcome.network, text, {
     version: layer.version ?? null,
     gitCommit: layer.deploymentInfo?.gitCommit ?? null,
@@ -306,13 +336,15 @@ export async function pointHostname(
   outcome: GeneratedOutcome,
   cid: string,
 ): Promise<void> {
+  const { gateway } = config;
+  if (!gateway) throw new Error("CLOUDFLARE_API_TOKEN is not set");
   const hostname = config.hostnames[outcome.network];
-  const current = await config.gateway.currentCid(hostname);
+  const current = await gateway.currentCid(hostname);
   if (current === cid) return; // a retry after the change already landed
   if (current !== outcome.liveCid)
     throw new TipMovedError(outcome.network, outcome.liveCid, current);
-  await config.gateway.setCid(hostname, cid);
-  const after = await config.gateway.currentCid(hostname);
+  await gateway.setCid(hostname, cid);
+  const after = await gateway.currentCid(hostname);
   if (after !== cid)
     throw new Error(`${hostname} still serves ${after} after pointing it at ${cid}`);
 }

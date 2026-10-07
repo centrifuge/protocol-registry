@@ -11,7 +11,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 
-import { github, runConfig } from "./config.ts";
+import { github, hostnames, runConfig } from "./config.ts";
 import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
 import {
@@ -29,6 +29,7 @@ import {
   loadEnv,
   pinNetwork,
   pointHostname,
+  publishMode,
   TipMovedError,
   type GeneratedOutcome,
 } from "./run.ts";
@@ -52,13 +53,20 @@ export interface RunResult {
   sha: string;
   outcomes: NetworkOutcome[];
   envProblems: string[];
-  published: { network: Network; cid: string }[];
-  /** Publishing is off (PUBLISH_ENABLED): what would have been published. */
+  /** Pinned layers; `served` once the hostname points at them (PUBLISH_MODE live). */
+  published: Published[];
+  /** PUBLISH_MODE shadow: what would have been published. */
   shadow: Network[];
 }
 
+interface Published {
+  network: Network;
+  cid: string;
+  served: boolean;
+}
+
 const reportKey = (runId: string) => `runs/${runId}/report.md`;
-const LAST_REFUSAL_KEY = "state/last-cron-refusal.md";
+const LAST_CRON_MESSAGE_KEY = "state/last-cron-message.txt";
 
 export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
   async run(event: WorkflowEvent<RunParams>, step: WorkflowStep): Promise<RunResult> {
@@ -133,11 +141,12 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
         );
       }
 
-      const published: { network: Network; cid: string }[] = [];
+      const published: Published[] = [];
       const shadow: Network[] = [];
       if (params.kind === "publish" && !hasErrors(outcomes)) {
+        const mode = publishMode(this.env.PUBLISH_MODE, config);
         for (const outcome of outcomes.filter((o) => o.publishable)) {
-          if (this.env.PUBLISH_ENABLED !== "true") {
+          if (mode === "shadow") {
             shadow.push(outcome.network);
             continue;
           }
@@ -148,6 +157,10 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
               throw error instanceof TipMovedError ? new NonRetryableError(error.message) : error;
             }
           });
+          if (mode === "pin") {
+            published.push({ network: outcome.network, cid, served: false });
+            continue;
+          }
           await step.do(`point ${config.hostnames[outcome.network]} at ${cid}`, async () => {
             try {
               await pointHostname(config, outcome, cid);
@@ -155,7 +168,7 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
               throw error instanceof TipMovedError ? new NonRetryableError(error.message) : error;
             }
           });
-          published.push({ network: outcome.network, cid });
+          published.push({ network: outcome.network, cid, served: true });
         }
       }
 
@@ -193,7 +206,7 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
     sha: string,
     outcomes: NetworkOutcome[],
     envProblems: string[],
-    published: { network: Network; cid: string }[] = [],
+    published: Published[] = [],
     shadow: Network[] = [],
   ): Promise<void> {
     const markdown = previewMarkdown(outcomes, envProblems);
@@ -210,34 +223,38 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
     }
     if (params.kind === "preview") return; // a manual preview is read from GET /runs/<id>
 
+    const hostname = (network: Network) => hostnames(this.env)[network];
     const lines: string[] = [];
-    for (const { network, cid } of published) {
+    for (const { network, cid, served } of published) {
       lines.push(
-        `:white_check_mark: *${network}* published: \`${cid}\` → https://${this.env[network === "mainnet" ? "MAINNET_HOSTNAME" : "TESTNET_HOSTNAME"]}`,
+        served
+          ? `:white_check_mark: *${network}* published: \`${cid}\` → https://${hostname(network)}`
+          : `:pushpin: *${network}* pinned, not served (PUBLISH_MODE is pin): https://centrifuge-files.mypinata.cloud/ipfs/${cid}`,
       );
     }
     for (const network of shadow) {
       lines.push(
-        `:ghost: *${network}*: would publish (PUBLISH_ENABLED is off), registry stored under \`runs/${runId}/\``,
+        `:ghost: *${network}*: would publish (PUBLISH_MODE is shadow); the layer is at \`GET /runs/<run>/registry-${network}.json\``,
       );
     }
-    if (failed) {
-      lines.push(`:x: *Registry publish refused* — ${title}`);
-    }
+    if (failed) lines.push(`:x: *Registry publish refused* — ${title}`);
+
     // A reconcile that finds nothing to publish is the steady state, and not worth a message. One
-    // that is refused keeps being refused until someone acts, so it is repeated only when it changes
+    // that would say the same as the last (a refusal nobody acted on yet, a shadow or pinned layer
+    // that stays unpublished) is not repeated either
     if (lines.length === 0) {
-      await this.env.REGISTRY_BUCKET.delete(LAST_REFUSAL_KEY);
+      await this.env.REGISTRY_BUCKET.delete(LAST_CRON_MESSAGE_KEY);
       return;
     }
-    if (params.reason === "cron" && failed) {
-      const last = await (await this.env.REGISTRY_BUCKET.get(LAST_REFUSAL_KEY))?.text();
-      if (last === markdown) return;
-      await this.env.REGISTRY_BUCKET.put(LAST_REFUSAL_KEY, markdown);
+    const message = `${lines.join("\n")}${failed ? `\n\`\`\`${markdown.slice(0, 2500)}\`\`\`` : ""}`;
+    if (params.reason === "cron") {
+      const last = await (await this.env.REGISTRY_BUCKET.get(LAST_CRON_MESSAGE_KEY))?.text();
+      if (last === message) return;
+      await this.env.REGISTRY_BUCKET.put(LAST_CRON_MESSAGE_KEY, message);
     }
     await notifySlack(
       this.env.SLACK_WEBHOOK_URL,
-      `${lines.join("\n")}\n_${params.reason}, \`${sha.slice(0, 9)}\` of ${this.env.SOURCE_BRANCH}, run \`${runId}\`_${failed ? `\n\`\`\`${markdown.slice(0, 2500)}\`\`\`` : ""}`,
+      `${message}\n_${params.reason}, \`${sha.slice(0, 9)}\` of ${this.env.SOURCE_BRANCH}, run \`${runId}\`_`,
     );
   }
 }

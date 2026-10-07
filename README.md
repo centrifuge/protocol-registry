@@ -41,13 +41,23 @@ manual POST /runs                     2. env/ at that commit, checked: schema, r
   layer each network would get, its retirements, and every finding. It fails when the layer would
   break the indexer, so making it a required check keeps bad env out of the branch.
 - **The cron** reconciles every six hours: a delivery GitHub dropped or a run that failed is retried
-  without anyone noticing it first. A run that finds nothing to publish says nothing; one refused for
-  the same reason as the last time does not repeat itself.
+  without anyone noticing it first. A run that finds nothing to publish says nothing, and one that
+  would say the same as the last cron run does not repeat itself.
 - **Before swapping the dnslink**, a publish checks the hostname still serves the CID its layer was
   built on. If anything else published in between, it stops and says so rather than orphaning that
   layer.
-- **`PUBLISH_ENABLED`** set to anything but `"true"` stops a publish after generation and posts what
-  it would have published; the layers stay in R2 under `runs/<run id>/`.
+- **`PUBLISH_MODE`** decides how far a publish goes, one stage at a time:
+
+  | Mode                                      | Generates | Pins to IPFS | Points the hostname | Needs                                |
+  | ----------------------------------------- | :-------: | :----------: | :-----------------: | ------------------------------------ |
+  | `shadow` (default, and any unknown value) |     ✓     |              |                     | —                                    |
+  | `pin`                                     |     ✓     |      ✓       |                     | `PINATA_JWT`                         |
+  | `live`                                    |     ✓     |      ✓       |          ✓          | `PINATA_JWT`, `CLOUDFLARE_API_TOKEN` |
+
+  A mode without its credentials refuses rather than doing less. Until `live`, the Worker does not
+  hold the Web3 hostname token at all (it reads the live CID from public DNS instead), so nothing it
+  does can change what registry.centrifuge.io serves. A pinned layer nothing points at is invisible to
+  consumers, which makes `pin` the place to inspect real output before going `live`.
 
 The generator (`src/core/`) is a port of `script/registry/` from protocol-internal at
 [centrifuge/protocol-internal#460](https://github.com/centrifuge/protocol-internal/pull/460), verified
@@ -250,8 +260,9 @@ NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
 NODE_SHIMS_MODE=local pnpm exec wrangler deploy --profile centrifuge-prod
 ```
 
-Variables live in `wrangler.jsonc`; changing one (`SOURCE_BRANCH` at a release, `PUBLISH_ENABLED` at
-the cutover) is a commit and a deploy.
+Variables live in `wrangler.jsonc`; changing one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
+the cutover) is a commit and a deploy. `.env.1password` leaves the publishing credentials commented
+out; uncomment them (and re-run `push-secrets.sh`) for the mode that needs them.
 
 ## Operations
 
@@ -297,13 +308,15 @@ Worker taking the place of re-enabling `registry.yml` on `live-v3.3`.
 
 1. Merge #460 into `live-v3.3`; its `generate` job stays disabled.
 2. ops-v3: the R2 bucket and the R2 token. Create the GitHub App and the 1Password
-   item, push the secrets, deploy with `PUBLISH_ENABLED: "false"`.
+   item, push the secrets, deploy with `PUBLISH_MODE: "shadow"`.
 3. Shadow period: PRs into `live-v3.3` get previews; publishes post what they would publish. The first
-   run requests ABI builds for every tag env uses.
+   run requests ABI builds for every tag env uses. Then `pin`, with `PINATA_JWT`: real layers on IPFS,
+   compared against what protocol-internal's pipeline would publish, with nothing pointing at them.
 4. Once the v3.3 deployment has written the configs,
    [centrifuge/api-v3#499](https://github.com/centrifuge/api-v3/issues/499) is merged, and
    `live-v3.2`'s `generate` job is disabled (its generator still tombstones on absence and would undo a
-   v3.3 layer): set `PUBLISH_ENABLED: "true"` and deploy. The Worker is the only publisher from then on.
+   v3.3 layer): push `CLOUDFLARE_API_TOKEN`, set `PUBLISH_MODE: "live"` and deploy. The Worker is the
+   only publisher from then on.
 5. Remove `script/registry/`, `registry.yml`, the `detect-*` CI scripts and main's
    `registry-publish.yml` from protocol-internal; drop protocol-internal as a destination of the Web3
    token in ops-v3 and rotate it; make **Registry preview** a required check on the release branch.

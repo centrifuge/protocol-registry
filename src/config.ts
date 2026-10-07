@@ -29,7 +29,9 @@ export function runConfig(env: Env, log: Logger = consoleLogger): RunConfig {
   return {
     gh: github(env),
     bucket: env.REGISTRY_BUCKET,
-    gateway: web3Gateway(env.CLOUDFLARE_API_TOKEN, env.CLOUDFLARE_ZONE_ID),
+    gateway: env.CLOUDFLARE_API_TOKEN
+      ? web3Gateway(env.CLOUDFLARE_API_TOKEN, env.CLOUDFLARE_ZONE_ID)
+      : null,
     sourceRepo: env.SOURCE_REPO,
     hostnames: hostnames(env),
     abiBuild: {
@@ -38,7 +40,7 @@ export function runConfig(env: Env, log: Logger = consoleLogger): RunConfig {
       ref: env.ABI_BUILD_REF,
     },
     etherscanApiKey: env.ETHERSCAN_API_KEY ?? null,
-    pinataJwt: env.PINATA_JWT,
+    pinataJwt: env.PINATA_JWT ?? null,
     log,
   };
 }
