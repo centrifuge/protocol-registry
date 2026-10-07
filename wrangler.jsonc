@@ -1,0 +1,73 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "centrifuge-protocol-registry",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // Centrifuge Official, the account that holds the centrifuge.io zone and its registry hostnames
+  "account_id": "1a71ac8bbd35fd2bf390fddf66a44294",
+  // The GitHub App posts to https://<custom domain>/webhooks/github. The custom domain is a
+  // cloudflare_workers_custom_domain in ops-v3, so it is not declared here.
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true,
+    },
+  },
+  // Reconciles the published registries with the live branch every six hours, so a missed webhook or
+  // a transient failure is retried without anyone noticing it first
+  "triggers": {
+    "crons": ["17 */6 * * *"],
+  },
+  "vars": {
+    // Where the env configs live, and the release branch the registries publish from. Cutting a
+    // release is a change to SOURCE_BRANCH here.
+    "SOURCE_REPO": "centrifuge/protocol-internal",
+    "SOURCE_BRANCH": "live-v3.3",
+    // Where the ABI build runs (.github/workflows/build-abis.yml)
+    "ABI_BUILD_REPO": "centrifuge/protocol-registry",
+    "ABI_BUILD_WORKFLOW": "build-abis.yml",
+    "ABI_BUILD_REF": "main",
+    // "false" runs everything up to the pin and stops there, posting what it would have published:
+    // the shadow mode the cutover starts in
+    "PUBLISH_ENABLED": "false",
+    "MAINNET_HOSTNAME": "registry.centrifuge.io",
+    "TESTNET_HOSTNAME": "registry.testnet.centrifuge.io",
+    // centrifuge.io, where both hostnames live
+    "CLOUDFLARE_ZONE_ID": "b9a43e7d34e470e7ee9b1f41a34cc726",
+  },
+  // Published layers by CID (immutable), ABIs by tag (abis/<tag>/<Artifact>.json, written by the
+  // build-abis workflow), and each run's generated registries and reports (runs/<id>/...)
+  "r2_buckets": [
+    {
+      "binding": "REGISTRY_BUCKET",
+      "bucket_name": "centrifuge-protocol-registry",
+    },
+  ],
+  // One run at a time: the publisher coalesces triggers and starts the next run when one finishes
+  "durable_objects": {
+    "bindings": [{ "name": "PUBLISHER", "class_name": "Publisher" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Publisher"] }],
+  "workflows": [
+    {
+      "name": "centrifuge-protocol-registry-run",
+      "binding": "REGISTRY_RUN",
+      "class_name": "RegistryRun",
+    },
+  ],
+  // Secrets, seeded from 1Password by the ops-v3 operator script (see README.md, "Operations"):
+  //   GITHUB_APP_ID            the App that reads protocol-internal, posts check runs, dispatches ABI builds
+  //   GITHUB_APP_PRIVATE_KEY   its key in PKCS#8 PEM (`openssl pkcs8 -topk8 -nocrypt -in app.pem`)
+  //   GITHUB_WEBHOOK_SECRET    the App's webhook secret
+  //   ETHERSCAN_API_KEY        creation blocks for contracts env records without one
+  //   PINATA_JWT               pins layers (1Password, limited access)
+  //   CLOUDFLARE_API_TOKEN     Web3 Hostnames Write on centrifuge.io ("ops-v3 control web3 hostnames and DNS")
+  //   SLACK_WEBHOOK_URL        publishes, refusals and failures
+  //   MANUAL_TRIGGER_TOKEN     bearer token for POST /runs (manual runs 404 without it)
+}

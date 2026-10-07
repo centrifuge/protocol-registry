@@ -1,0 +1,243 @@
+/**
+ * One registry run, as a durable Workflow: every step retries on its own and keeps its result, so a
+ * run that waits on an ABI build or an unreachable gateway resumes where it stopped.
+ *
+ *   commit → env check → ABIs → generate each network → preview: the PR's check run
+ *                                                      → publish: pin, swap the dnslink, Slack
+ *
+ * A publish run is started by the Publisher (one at a time); a preview by a pull request.
+ */
+
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
+
+import { github, runConfig } from "./config.ts";
+import type { RegistryMode } from "./core/generate.ts";
+import { NETWORKS, type Network } from "./core/types.ts";
+import {
+  branchHead,
+  completeCheckRun,
+  pullRequestFiles,
+  type CheckRunOutput,
+} from "./io/github.ts";
+import { notifySlack } from "./io/publish.ts";
+import { hasErrors, headline, previewMarkdown, type NetworkOutcome } from "./report.ts";
+import {
+  checkEnv,
+  ensureAbis,
+  generateNetwork,
+  loadEnv,
+  pinNetwork,
+  pointHostname,
+  TipMovedError,
+  type GeneratedOutcome,
+} from "./run.ts";
+
+export interface RunParams {
+  kind: "preview" | "publish";
+  /** Why the run started, for the report: "push of abc123 by …", "cron", "manual". */
+  reason: string;
+  /** The commit to generate from; a publish without one takes the source branch head. */
+  sha?: string;
+  /** A preview for a pull request reports on this check run. */
+  pr?: { number: number; checkRunId: number };
+  networks?: Network[];
+  mode?: RegistryMode;
+  sourceCid?: string;
+  allowPartialChain?: boolean;
+  allowHistoryDrop?: boolean;
+}
+
+export interface RunResult {
+  sha: string;
+  outcomes: NetworkOutcome[];
+  envProblems: string[];
+  published: { network: Network; cid: string }[];
+  /** Publishing is off (PUBLISH_ENABLED): what would have been published. */
+  shadow: Network[];
+}
+
+const reportKey = (runId: string) => `runs/${runId}/report.md`;
+const LAST_REFUSAL_KEY = "state/last-cron-refusal.md";
+
+export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
+  async run(event: WorkflowEvent<RunParams>, step: WorkflowStep): Promise<RunResult> {
+    const params = event.payload;
+    const runId = event.instanceId;
+    const config = runConfig(this.env);
+    const networks = params.networks ?? [...NETWORKS];
+
+    try {
+      const sha = await step.do(
+        "resolve commit",
+        async () =>
+          params.sha ?? branchHead(config.gh, this.env.SOURCE_REPO, this.env.SOURCE_BRANCH),
+      );
+
+      if (params.pr) {
+        const pr = params.pr;
+        const touchesEnv = await step.do("check the PR's paths", async () =>
+          (await pullRequestFiles(config.gh, this.env.SOURCE_REPO, pr.number)).some(
+            (path) => path.startsWith("env/") && !path.startsWith("env/connections_viewer."),
+          ),
+        );
+        if (!touchesEnv) {
+          await step.do("report: nothing to preview", () =>
+            this.complete(pr.checkRunId, "success", {
+              title: "No registry changes",
+              summary:
+                "This pull request changes nothing under env/, so the registry is unaffected.",
+            }),
+          );
+          return { sha, outcomes: [], envProblems: [], published: [], shadow: [] };
+        }
+      }
+
+      const envProblems = await step.do("check env", async () =>
+        checkEnv(config, await loadEnv(config, sha)),
+      );
+      if (envProblems.length > 0) {
+        await step.do("report env problems", () =>
+          this.report(params, runId, sha, [], envProblems),
+        );
+        return { sha, outcomes: [], envProblems, published: [], shadow: [] };
+      }
+
+      // A missing tag is built by the build-abis workflow, which takes a few minutes per tag
+      await step.do(
+        "ensure ABIs",
+        { retries: { limit: 30, delay: "2 minutes", backoff: "constant" }, timeout: "5 minutes" },
+        async () => {
+          const missing = await ensureAbis(config, await loadEnv(config, sha));
+          if (missing.length > 0) throw new Error(`waiting for ABI builds: ${missing.join(", ")}`);
+        },
+      );
+
+      const outcomes: GeneratedOutcome[] = [];
+      for (const network of networks) {
+        outcomes.push(
+          await step.do(
+            `generate ${network}`,
+            {
+              retries: { limit: 3, delay: "1 minute", backoff: "exponential" },
+              timeout: "10 minutes",
+            },
+            async () =>
+              generateNetwork(config, runId, network, await loadEnv(config, sha), {
+                mode: params.mode,
+                sourceCid: params.sourceCid,
+                allowPartialChain: params.allowPartialChain,
+                allowHistoryDrop: params.allowHistoryDrop,
+              }),
+          ),
+        );
+      }
+
+      const published: { network: Network; cid: string }[] = [];
+      const shadow: Network[] = [];
+      if (params.kind === "publish" && !hasErrors(outcomes)) {
+        for (const outcome of outcomes.filter((o) => o.publishable)) {
+          if (this.env.PUBLISH_ENABLED !== "true") {
+            shadow.push(outcome.network);
+            continue;
+          }
+          const cid = await step.do(`pin ${outcome.network}`, async () => {
+            try {
+              return await pinNetwork(config, runId, outcome, sha);
+            } catch (error) {
+              throw error instanceof TipMovedError ? new NonRetryableError(error.message) : error;
+            }
+          });
+          await step.do(`point ${config.hostnames[outcome.network]} at ${cid}`, async () => {
+            try {
+              await pointHostname(config, outcome, cid);
+            } catch (error) {
+              throw error instanceof TipMovedError ? new NonRetryableError(error.message) : error;
+            }
+          });
+          published.push({ network: outcome.network, cid });
+        }
+      }
+
+      await step.do("report", () =>
+        this.report(params, runId, sha, outcomes, [], published, shadow),
+      );
+      return { sha, outcomes, envProblems: [], published, shadow };
+    } catch (error) {
+      await step.do("report failure", async () => {
+        const message = (error as Error).message;
+        if (params.pr) {
+          await this.complete(params.pr.checkRunId, "failure", {
+            title: "Registry preview failed",
+            summary: `The run stopped before it could preview this pull request:\n\n> ${message}\n\nRun \`${runId}\`; re-run the check to try again.`,
+          });
+        } else {
+          await notifySlack(
+            this.env.SLACK_WEBHOOK_URL,
+            `:x: *Registry ${params.kind} failed* (${params.reason})\n>${message.replace(/\n/g, "\n>")}\nRun \`${runId}\``,
+          );
+        }
+      });
+      throw error;
+    }
+  }
+
+  private async complete(id: number, conclusion: "success" | "failure", output: CheckRunOutput) {
+    await completeCheckRun(github(this.env), this.env.SOURCE_REPO, id, conclusion, output);
+  }
+
+  /** The check run of a preview, or the Slack message of a publish. */
+  private async report(
+    params: RunParams,
+    runId: string,
+    sha: string,
+    outcomes: NetworkOutcome[],
+    envProblems: string[],
+    published: { network: Network; cid: string }[] = [],
+    shadow: Network[] = [],
+  ): Promise<void> {
+    const markdown = previewMarkdown(outcomes, envProblems);
+    await this.env.REGISTRY_BUCKET.put(reportKey(runId), markdown);
+    const failed = envProblems.length > 0 || hasErrors(outcomes);
+    const title = envProblems.length > 0 ? "env/ has problems" : headline(outcomes);
+
+    if (params.pr) {
+      await this.complete(params.pr.checkRunId, failed ? "failure" : "success", {
+        title,
+        summary: `${markdown}---\n*Preview of \`${sha.slice(0, 9)}\` against the live registries. Publishing happens when this merges into \`${this.env.SOURCE_BRANCH}\`.*`,
+      });
+      return;
+    }
+    if (params.kind === "preview") return; // a manual preview is read from GET /runs/<id>
+
+    const lines: string[] = [];
+    for (const { network, cid } of published) {
+      lines.push(
+        `:white_check_mark: *${network}* published: \`${cid}\` → https://${this.env[network === "mainnet" ? "MAINNET_HOSTNAME" : "TESTNET_HOSTNAME"]}`,
+      );
+    }
+    for (const network of shadow) {
+      lines.push(
+        `:ghost: *${network}*: would publish (PUBLISH_ENABLED is off), registry stored under \`runs/${runId}/\``,
+      );
+    }
+    if (failed) {
+      lines.push(`:x: *Registry publish refused* — ${title}`);
+    }
+    // A reconcile that finds nothing to publish is the steady state, and not worth a message. One
+    // that is refused keeps being refused until someone acts, so it is repeated only when it changes
+    if (lines.length === 0) {
+      await this.env.REGISTRY_BUCKET.delete(LAST_REFUSAL_KEY);
+      return;
+    }
+    if (params.reason === "cron" && failed) {
+      const last = await (await this.env.REGISTRY_BUCKET.get(LAST_REFUSAL_KEY))?.text();
+      if (last === markdown) return;
+      await this.env.REGISTRY_BUCKET.put(LAST_REFUSAL_KEY, markdown);
+    }
+    await notifySlack(
+      this.env.SLACK_WEBHOOK_URL,
+      `${lines.join("\n")}\n_${params.reason}, \`${sha.slice(0, 9)}\` of ${this.env.SOURCE_BRANCH}, run \`${runId}\`_${failed ? `\n\`\`\`${markdown.slice(0, 2500)}\`\`\`` : ""}`,
+    );
+  }
+}
