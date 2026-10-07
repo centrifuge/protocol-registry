@@ -6,7 +6,7 @@ import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, compareSource, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
 import { pointHostname, publishMode, TipMovedError } from "../src/run.ts";
-import { route } from "../src/webhook.ts";
+import { route, touchesRegistryInputs } from "../src/webhook.ts";
 
 const config = { sourceRepo: "centrifuge/protocol-internal", sourceBranch: "live-v3.3" };
 const repository = { full_name: config.sourceRepo };
@@ -84,12 +84,18 @@ test("re-requesting the check previews the PR again", () => {
   assert.deepEqual(route("check_run", payload, config), { type: "preview", pr: 9, headSha: "h" });
 });
 
-test("only release tags start an ABI build", () => {
-  const create = (ref) => route("create", { repository, ref_type: "tag", ref }, config);
-  assert.deepEqual(create("v3.3.0"), { type: "build-abis", tag: "v3.3.0" });
-  assert.equal(create("v3.3.0-rc4").type, "build-abis");
-  assert.equal(create("v3").type, "build-abis");
-  assert.equal(create("deploy-v3.3-1759000000").type, "ignore");
+test("only paths under env/ that feed the registry count as registry changes", () => {
+  assert.equal(touchesRegistryInputs("env/mainnet/ethereum.json"), true);
+  assert.equal(touchesRegistryInputs("env/mainnet/retired.json"), true);
+  assert.equal(touchesRegistryInputs("env/registry.json"), true);
+  assert.equal(touchesRegistryInputs("env/connections_viewer.html"), false);
+  assert.equal(touchesRegistryInputs("src/core/hub/Hub.sol"), false);
+  assert.equal(touchesRegistryInputs("environment.md"), false);
+});
+
+test("a tag being created starts nothing: protocol-internal builds its ABIs on push", () => {
+  const payload = { repository, ref_type: "tag", ref: "v3.3.0" };
+  assert.equal(route("create", payload, config).type, "ignore");
 });
 
 async function sign(secret, body) {

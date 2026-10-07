@@ -3,9 +3,9 @@
  * testable without the network:
  *
  *   - a push to the source branch that touches env/ → publish from that commit
- *   - a pull request into the source branch → a preview on its head commit (a check run)
+ *   - a pull request into the source branch → a preview on its head commit (a check run), if its
+ *     files touch env/; that is checked against the PR's file list before any check is posted
  *   - a check run re-requested from the PR page → the same preview again
- *   - a tag created in the source repository → build its ABIs ahead of the first run needing them
  */
 
 import { CHECK_NAME } from "./io/github.ts";
@@ -18,7 +18,6 @@ export interface RouteConfig {
 export type Route =
   | { type: "publish"; sha: string; reason: string }
   | { type: "preview"; pr: number; headSha: string }
-  | { type: "build-abis"; tag: string }
   | { type: "ignore"; reason: string };
 
 interface PushCommit {
@@ -27,12 +26,12 @@ interface PushCommit {
   removed?: string[];
 }
 
-/** The viewer only reads the configs, so nothing it changes can change what the registry publishes. */
-const touchesRegistryInputs = (path: string) =>
+/**
+ * Whether a changed path can change what the registry publishes: anything under env/ except the
+ * connections viewer, which only reads the configs.
+ */
+export const touchesRegistryInputs = (path: string) =>
   path.startsWith("env/") && !path.startsWith("env/connections_viewer.");
-
-/** v3, v3.1.0, v3.3.0-rc4: the tags a contract version resolves to. */
-const RELEASE_TAG = /^v\d+(\.\d+){0,2}(-[0-9A-Za-z.]+)?$/;
 
 const PREVIEW_ACTIONS = new Set(["opened", "synchronize", "reopened", "ready_for_review"]);
 
@@ -83,13 +82,6 @@ export function route(event: string, payload: any, config: RouteConfig): Route {
       if (!pr)
         return { type: "ignore", reason: "re-requested check has no PR into the source branch" };
       return { type: "preview", pr: pr.number, headSha: run.head_sha };
-    }
-    case "create": {
-      if (payload.ref_type !== "tag")
-        return { type: "ignore", reason: `created ${payload.ref_type}` };
-      // Release tags only: env changes also tag deploy-<version>-<timestamp>, which no config names
-      if (!RELEASE_TAG.test(payload.ref)) return { type: "ignore", reason: `tag ${payload.ref}` };
-      return { type: "build-abis", tag: payload.ref };
     }
     default:
       return { type: "ignore", reason: `${event} event` };

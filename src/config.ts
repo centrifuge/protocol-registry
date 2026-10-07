@@ -34,11 +34,6 @@ export function runConfig(env: Env, log: Logger = consoleLogger): RunConfig {
       : null,
     sourceRepo: env.SOURCE_REPO,
     hostnames: hostnames(env),
-    abiBuild: {
-      repo: env.ABI_BUILD_REPO,
-      workflow: env.ABI_BUILD_WORKFLOW,
-      ref: env.ABI_BUILD_REF,
-    },
     etherscanApiKey: env.ETHERSCAN_API_KEY ?? null,
     pinataJwt: env.PINATA_JWT ?? null,
     log,

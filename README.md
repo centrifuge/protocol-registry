@@ -25,10 +25,10 @@ carry a copy of.
 GitHub App webhooks ──► Worker ──► Publisher (Durable Object, one publish at a time)
   push to the release branch          │
   pull request into it                ▼
-  release tag created            RegistryRun (Workflow, durable steps, each retried on its own)
-cron, every 6 hours                   1. the commit: the PR head, or the release branch head
-manual POST /runs                     2. env/ at that commit, checked: schema, retired.json, version tags
-                                      3. ABIs for every tag env uses, built on demand (build-abis.yml)
+cron, every 6 hours              RegistryRun (Workflow, durable steps, each retried on its own)
+manual POST /runs                     1. the commit: the PR head, or the release branch head
+                                      2. env/ at that commit, checked: schema, retired.json, version tags
+                                      3. ABIs for every tag env uses, as protocol-internal built them
                                       4. each network: walk the published chain, generate, validate
                                       5a. preview → the PR's "Registry preview" check run
                                       5b. publish → pin to Pinata, point the hostname's dnslink, Slack
@@ -37,9 +37,10 @@ manual POST /runs                     2. env/ at that commit, checked: schema, r
 - **Pushes** to the release branch (`SOURCE_BRANCH` in `wrangler.jsonc`) that touch `env/` start a
   publish. A publish always generates from the branch head, so triggers that arrive while one runs
   collapse into a single run after it.
-- **Pull requests** into the release branch get a **Registry preview** check run on their head: the
-  layer each network would get, its retirements, and every finding. It fails when the layer would
-  break the indexer, so making it a required check keeps bad env out of the branch.
+- **Pull requests** into the release branch that touch `env/` get a **Registry preview** check run on
+  their head: the layer each network would get, its retirements, and every finding. It fails when the
+  layer would break the indexer. Other PRs get no check at all, which is also why it cannot be a
+  required check: a PR without one would wait on it forever.
 - **The cron** reconciles every six hours: a delivery GitHub dropped or a run that failed is retried
   without anyone noticing it first. A run that finds nothing to publish says nothing, and one that
   would say the same as the last cron run does not repeat itself.
@@ -215,38 +216,45 @@ case and names the ABI it ships.
 
 ## ABIs
 
-A Worker cannot run git or forge, so ABIs are built ahead of time, once per protocol-internal tag, by
-[`.github/workflows/build-abis.yml`](.github/workflows/build-abis.yml): it checks out the tag, runs
-`forge build` (and the `ir` profile, for `src-ir/`), and writes one R2 object per artifact,
-`abis/<tag>/<Artifact>.json`, then `abis/<tag>/manifest.json` with the commit it built. A run that
-needs a tag without a manifest, or with a manifest from a commit the tag no longer points at, dispatches
-the build and waits for it; release tags are also built as soon as they are created.
+A Worker cannot run git or forge, so ABIs are built ahead of time, once per release tag, by
+protocol-internal's `.github/workflows/build-abis.yml`, which runs when a tag is pushed: it checks out
+the tag, runs `forge build` (and the `ir` profile, for `src-ir/`), and writes one R2 object per
+artifact, `abis/<tag>/<Artifact>.json`, then `abis/<tag>/manifest.json` with the commit it built. A
+tag pushed before that workflow existed is built by dispatching it by hand:
 
-`scripts/build-abi-bundle.ts` turns a forge build into a bundle; where two sources define an artifact
-of the same name, the first in sorted order wins, skipping tests, as the old ABI cache did.
+```bash
+gh workflow run build-abis.yml -R centrifuge/protocol-internal -f tag=v3.2.0
+```
+
+A run that needs a tag without a manifest, or with a manifest from a commit the tag no longer points
+at, waits up to an hour for a build in flight, then fails naming the tag.
+
+`scripts/build-abi-bundle.ts` builds the same bundle from a local forge build, for local runs: where
+two sources define an artifact of the same name, the first in sorted order wins, skipping tests, as
+the old ABI cache did and the workflow does.
 
 ## Setup
 
 What exists outside this repository, and where it is managed:
 
-| What                                                                                                                  | Where                                                                                        |
-| --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| R2 bucket `centrifuge-protocol-registry` (Official account)                                                           | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                     |
-| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to this repo's `production` environment | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                   |
-| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                         | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                |
-| Worker secrets                                                                                                        | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
-| The GitHub App                                                                                                        | GitHub organization settings                                                                 |
+| What                                                                                                                    | Where                                                                                        |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                     |
+| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                   |
+| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                |
+| Worker secrets                                                                                                          | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
+| The GitHub App                                                                                                          | GitHub organization settings                                                                 |
 
 The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App
 is the only caller that needs it, and nothing about it needs a domain of its own.
 
-**GitHub App.** Installed on protocol-internal and protocol-registry, with webhook URL
-`https://<host>/webhooks/github` and a webhook secret. Permissions: Contents read, Checks
-write, Pull requests read, Actions write (to dispatch `build-abis.yml`), Metadata read. Events: Push,
-Pull request, Check run, Create. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
-(`openssl pkcs8 -topk8 -nocrypt -in app.pem`). For `build-abis.yml`, this repository's `production`
-environment needs the variable `REGISTRY_APP_CLIENT_ID` and the secret `REGISTRY_APP_PRIVATE_KEY`.
+**GitHub App** ("Centrifuge Protocol Registry"). Installed on protocol-internal only, with webhook URL
+`https://<host>/webhooks/github` and a webhook secret. Permissions: Contents read, Checks write, Pull
+requests read, Metadata read; no Actions permission, since an App's permissions apply to every repo it
+is installed on and protocol-internal's workflows include deploys. Events: Push, Pull request, Check
+run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
+(`openssl pkcs8 -topk8 -nocrypt -in app.pem`).
 
 **Secrets.** With the 1Password item in place:
 
@@ -307,10 +315,11 @@ This follows the order of operations in
 Worker taking the place of re-enabling `registry.yml` on `live-v3.3`.
 
 1. Merge #460 into `live-v3.3`; its `generate` job stays disabled.
-2. ops-v3: the R2 bucket and the R2 token. Create the GitHub App and the 1Password
-   item, push the secrets, deploy with `PUBLISH_MODE: "shadow"`.
-3. Shadow period: PRs into `live-v3.3` get previews; publishes post what they would publish. The first
-   run requests ABI builds for every tag env uses. Then `pin`, with `PINATA_JWT`: real layers on IPFS,
+2. ops-v3: the R2 bucket and the R2 token. protocol-internal: `build-abis.yml`, then a dispatch for
+   every existing release tag. Create the GitHub App and the 1Password item, push the secrets, deploy
+   with `PUBLISH_MODE: "shadow"`.
+3. Shadow period: PRs into `live-v3.3` get previews; publishes post what they would publish. Then
+   `pin`, with `PINATA_JWT`: real layers on IPFS,
    compared against what protocol-internal's pipeline would publish, with nothing pointing at them.
 4. Once the v3.3 deployment has written the configs,
    [centrifuge/api-v3#499](https://github.com/centrifuge/api-v3/issues/499) is merged, and
@@ -319,11 +328,11 @@ Worker taking the place of re-enabling `registry.yml` on `live-v3.3`.
    only publisher from then on.
 5. Remove `script/registry/`, `registry.yml`, the `detect-*` CI scripts and main's
    `registry-publish.yml` from protocol-internal; drop protocol-internal as a destination of the Web3
-   token in ops-v3 and rotate it; make **Registry preview** a required check on the release branch.
+   token in ops-v3 and rotate it. `build-abis.yml` stays.
 
 Where the Worker differs from the scripts it replaces:
 
-- The preview is a check run instead of a PR comment, and it can block a merge.
+- The preview is a check run instead of a PR comment, on the same PRs: those that touch `env/`.
 - A manual publish no longer pins a layer with validation errors; errors are never bypassed.
 - The tip is read by CID from the hostname's dnslink and fetched through IPFS, instead of over HTTP
   with the CID resolved separately, so the layer and its `previousRegistry.ipfsHash` always agree.

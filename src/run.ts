@@ -15,16 +15,9 @@ import { generateRegistry, RefusedError, type Logger, type RegistryMode } from "
 import { NETWORKS, type Network } from "./core/types.ts";
 import { validateRegistry } from "./core/validate.ts";
 import { publishedTags, versionTagErrors } from "./core/version-tags.ts";
-import { abiKey, r2AbiStore } from "./io/abis.ts";
+import { r2AbiStore } from "./io/abis.ts";
 import { explorerCreationBlocks } from "./io/explorers.ts";
-import {
-  commitInfo,
-  compareSource,
-  dispatchWorkflow,
-  envSnapshot,
-  tagExists,
-  type GitHub,
-} from "./io/github.ts";
+import { commitInfo, compareSource, envSnapshot, tagExists, type GitHub } from "./io/github.ts";
 import { dnslinkCid, pinLayer, type Web3Gateway } from "./io/publish.ts";
 import { contractsInLayer, retiredRows, type NetworkOutcome } from "./report.ts";
 
@@ -35,7 +28,6 @@ export interface RunConfig {
   gateway: Web3Gateway | null;
   sourceRepo: string;
   hostnames: Record<Network, string>;
-  abiBuild: { repo: string; workflow: string; ref: string };
   etherscanApiKey: string | null;
   /** Null unless the Worker holds a Pinata JWT, which PUBLISH_MODE pin and live need. */
   pinataJwt: string | null;
@@ -145,16 +137,11 @@ export async function checkEnv(config: RunConfig, tree: EnvTree): Promise<string
   return problems;
 }
 
-/** How long a requested ABI build is waited for before it is requested again. */
-const ABI_BUILD_REQUEST_TTL_MS = 30 * 60_000;
-
 /**
- * Makes sure every tag the published deployments use has a complete ABI bundle built from the commit
- * the tag points at now, requesting a build for each that has none.
- *
- * @returns The tags still missing; the caller waits and asks again
+ * The tags the published deployments use that have no complete ABI bundle, built from the commit the
+ * tag points at now. protocol-internal's build-abis.yml builds a tag when it is pushed.
  */
-export async function ensureAbis(config: RunConfig, tree: EnvTree): Promise<string[]> {
+export async function missingAbis(config: RunConfig, tree: EnvTree): Promise<string[]> {
   const store = r2AbiStore(config.bucket);
   const pointer = registryPointer(tree);
   const tags = await publishedTags(
@@ -170,27 +157,12 @@ export async function ensureAbis(config: RunConfig, tree: EnvTree): Promise<stri
       commitInfo(config.gh, config.sourceRepo, tag),
     ]);
     if (manifest && commit && manifest.commit === commit.sha) continue;
-    missing.push(tag);
-
-    const requestedKey = abiKey(tag, "requested");
-    const requested = await config.bucket.get(requestedKey);
-    const requestedAt = requested ? Number(await requested.text()) : 0;
-    if (Date.now() - requestedAt < ABI_BUILD_REQUEST_TTL_MS) continue;
     config.log.info(
       manifest
-        ? `ABIs for ${tag} were built from ${manifest.commit}, the tag now points at ${commit?.sha}: rebuilding`
-        : `No ABIs built for ${tag} yet: requesting a build`,
+        ? `ABIs for ${tag} were built from ${manifest.commit}, but the tag now points at ${commit?.sha}`
+        : `No ABIs built for ${tag}`,
     );
-    await dispatchWorkflow(
-      config.gh,
-      config.abiBuild.repo,
-      config.abiBuild.workflow,
-      config.abiBuild.ref,
-      {
-        tag,
-      },
-    );
-    await config.bucket.put(requestedKey, String(Date.now()));
+    missing.push(tag);
   }
   return missing;
 }
