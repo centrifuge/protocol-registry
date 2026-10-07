@@ -5,9 +5,11 @@
   "compatibility_date": "2026-10-01",
   // Centrifuge Official, the account that holds the centrifuge.io zone and its registry hostnames
   "account_id": "1a71ac8bbd35fd2bf390fddf66a44294",
-  // The GitHub App posts to https://<custom domain>/webhooks/github. The custom domain is a
-  // cloudflare_workers_custom_domain in ops-v3, so it is not declared here.
-  "workers_dev": false,
+  // Served on workers.dev: the GitHub App posts to
+  // https://centrifuge-protocol-registry.<account subdomain>.workers.dev/webhooks/github, and nothing
+  // else needs a stable URL. Deliveries are checked against the App's webhook secret and the manual
+  // endpoints need a bearer token, so being reachable is not access.
+  "workers_dev": true,
   "preview_urls": false,
   "observability": {
     "enabled": true,

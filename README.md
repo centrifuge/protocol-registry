@@ -222,14 +222,17 @@ What exists outside this repository, and where it is managed:
 | What                                                                                                                  | Where                                                                                        |
 | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | R2 bucket `centrifuge-protocol-registry` (Official account)                                                           | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                     |
-| The Worker's custom domain (the webhook URL)                                                                          | ops-v3, a `cloudflare_workers_custom_domain`                                                 |
 | Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to this repo's `production` environment | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                   |
 | Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                         | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                |
 | Worker secrets                                                                                                        | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
 | The GitHub App                                                                                                        | GitHub organization settings                                                                 |
 
+The Worker is served on its `workers.dev` URL,
+`https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App
+is the only caller that needs it, and nothing about it needs a domain of its own.
+
 **GitHub App.** Installed on protocol-internal and protocol-registry, with webhook URL
-`https://<custom domain>/webhooks/github` and a webhook secret. Permissions: Contents read, Checks
+`https://<host>/webhooks/github` and a webhook secret. Permissions: Contents read, Checks
 write, Pull requests read, Actions write (to dispatch `build-abis.yml`), Metadata read. Events: Push,
 Pull request, Check run, Create. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 (`openssl pkcs8 -topk8 -nocrypt -in app.pem`). For `build-abis.yml`, this repository's `production`
@@ -293,7 +296,7 @@ This follows the order of operations in
 Worker taking the place of re-enabling `registry.yml` on `live-v3.3`.
 
 1. Merge #460 into `live-v3.3`; its `generate` job stays disabled.
-2. ops-v3: the R2 bucket, the custom domain, the R2 token. Create the GitHub App and the 1Password
+2. ops-v3: the R2 bucket and the R2 token. Create the GitHub App and the 1Password
    item, push the secrets, deploy with `PUBLISH_ENABLED: "false"`.
 3. Shadow period: PRs into `live-v3.3` get previews; publishes post what they would publish. The first
    run requests ABI builds for every tag env uses.
