@@ -1,0 +1,32 @@
+{
+  "name": "@centrifuge/protocol-registry",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generates and publishes the Centrifuge contract registry from protocol-internal env configs",
+  "type": "module",
+  "packageManager": "pnpm@10.19.0",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types --include-runtime=false",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261007.1",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.18.0",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "prettier": "3.9.9",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "wrangler": "^4.148.0"
+  }
+}
