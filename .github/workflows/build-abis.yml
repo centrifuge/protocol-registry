@@ -1,0 +1,102 @@
+# Builds the ABIs of one protocol-internal tag into R2, where the Worker packs registry layers from.
+#
+# A tag's source does not change, so each tag is built once: the Worker dispatches this when a run
+# needs a tag it has no bundle for (or one built from a commit the tag no longer points at), and when
+# a release tag is created. The bundle is one object per artifact plus a manifest written last:
+#
+#   abis/<tag>/<Artifact>.json, abis/<tag>/manifest.json   (see src/io/abis.ts)
+#
+# Auth: the registry GitHub App reads protocol-internal (REGISTRY_APP_CLIENT_ID, REGISTRY_APP_PRIVATE_KEY),
+# and bucket-scoped S3 credentials write R2 (R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY), both on the
+# `production` environment. The R2 token is owned in centrifuge/ops-v3 tokens.yaml. Uploads go through
+# the S3 API: `wrangler r2 object put` would need account-wide R2 write.
+
+name: Build ABIs
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "protocol-internal tag to build (e.g. v3.3.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: build-abis-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ABIs for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      TAG: ${{ inputs.tag }}
+      BUCKET: centrifuge-protocol-registry
+      R2_ENDPOINT: https://1a71ac8bbd35fd2bf390fddf66a44294.r2.cloudflarestorage.com
+    steps:
+      # The tag ends up in a git ref and in object keys; nothing but a release-shaped name gets that far
+      - name: Check the tag name
+        run: '[[ "$TAG" =~ ^v[0-9]+(\.[0-9]+){0,2}(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Token for protocol-internal
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.REGISTRY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
+          owner: centrifuge
+          repositories: protocol-internal
+          permission-contents: read
+
+      - name: Check out protocol-internal at the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: centrifuge/protocol-internal
+          ref: refs/tags/${{ inputs.tag }}
+          token: ${{ steps.token.outputs.token }}
+          path: protocol-internal
+          submodules: recursive
+          persist-credentials: false
+
+      # The version protocol-internal's registry CI built tags with
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.4.1
+
+      - name: Build
+        working-directory: protocol-internal
+        run: |
+          FOUNDRY_PROFILE=ci forge build --skip test
+          # src-ir contracts (e.g. OnchainPM) build under the ir profile, which older tags do not have
+          FOUNDRY_PROFILE=ir forge build --skip test || echo "::notice::no ir profile build at $TAG"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Bundle
+        run: node scripts/build-abi-bundle.ts protocol-internal "$TAG" "$(git -C protocol-internal rev-parse HEAD)" bundle
+
+      - name: Upload to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          # Artifacts first, dropping any a previous build of a moved tag left behind; the manifest
+          # last, since its presence is what marks the bundle complete
+          aws s3 sync bundle "s3://$BUCKET/abis/$TAG/" --endpoint-url "$R2_ENDPOINT" \
+            --delete --exclude manifest.json --exclude requested.json --content-type application/json
+          aws s3 cp bundle/manifest.json "s3://$BUCKET/abis/$TAG/manifest.json" \
+            --endpoint-url "$R2_ENDPOINT" --content-type application/json
+          echo "### ABIs for \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"\(.artifacts | length) artifacts from \(.commit)"' bundle/manifest.json >> "$GITHUB_STEP_SUMMARY"
