@@ -73,8 +73,8 @@ jobs:
       - name: Build
         working-directory: protocol-internal
         run: |
-          FOUNDRY_PROFILE=ci forge build --skip test
-          # src-ir contracts (e.g. OnchainPM) build under the ir profile, which older tags do not have
+          forge build --skip test
+          # src-ir contracts (e.g. OnchainPM) build under the ir profile, which tags before v3.2.0 lack
           FOUNDRY_PROFILE=ir forge build --skip test || echo "::notice::no ir profile build at $TAG"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
