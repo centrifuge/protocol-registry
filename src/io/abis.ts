@@ -1,15 +1,15 @@
 /**
  * ABIs as built at a protocol-internal tag.
  *
- * A tag's source never changes, so each tag is built once, by .github/workflows/build-abis.yml, into
- * one object per artifact:
+ * A tag's source never changes, so each tag is built once, by protocol-internal's
+ * .github/workflows/build-abis.yml when the tag is pushed, into one object per artifact:
  *
  *     abis/<tag>/<Artifact>.json    the artifact's ABI array
  *     abis/<tag>/manifest.json      { tag, commit, builtAt, artifacts } — written last, so a tag
  *                                   with a manifest is complete
  *
- * `commit` is the commit the tag pointed at when it was built. A tag moved since is rebuilt rather
- * than served stale ABIs.
+ * `commit` is the commit the tag pointed at when it was built. A tag moved since is refused until it is
+ * built again, rather than served stale ABIs.
  */
 
 export interface AbiManifest {

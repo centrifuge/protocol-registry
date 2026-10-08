@@ -14,10 +14,9 @@
 import { github } from "./config.ts";
 import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
-import { abiKey } from "./io/abis.ts";
-import { createCheckRun, dispatchWorkflow, verifyWebhookSignature } from "./io/github.ts";
+import { createCheckRun, pullRequestFiles, verifyWebhookSignature } from "./io/github.ts";
 import { isValidIpfsHash } from "./io/ipfs.ts";
-import { route } from "./webhook.ts";
+import { route, touchesRegistryInputs } from "./webhook.ts";
 import type { RunParams } from "./workflow.ts";
 
 import { Publisher } from "./publisher.ts";
@@ -80,7 +79,7 @@ function manualParams(body: ManualRun): RunParams | string {
   };
 }
 
-async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const body = await request.text();
   const signature = request.headers.get("X-Hub-Signature-256");
   if (!(await verifyWebhookSignature(env.GITHUB_WEBHOOK_SECRET, body, signature))) {
@@ -98,6 +97,11 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
       return json(await publisher(env).request({ kind: "publish", reason: decision.reason }), 202);
     case "preview": {
       const gh = github(env);
+      // A PR that cannot change the registry gets no check at all, rather than one saying so
+      const files = await pullRequestFiles(gh, env.SOURCE_REPO, decision.pr);
+      if (!files.some(touchesRegistryInputs)) {
+        return json({ ignored: `PR #${decision.pr} does not touch env/` }, 202);
+      }
       const checkRunId = await createCheckRun(gh, env.SOURCE_REPO, decision.headSha, {
         title: "Generating",
         summary: "Generating the registry layers this pull request would publish…",
@@ -114,22 +118,6 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
       });
       return json({ started: id }, 202);
     }
-    case "build-abis":
-      ctx.waitUntil(
-        (async () => {
-          await dispatchWorkflow(
-            github(env),
-            env.ABI_BUILD_REPO,
-            env.ABI_BUILD_WORKFLOW,
-            env.ABI_BUILD_REF,
-            {
-              tag: decision.tag,
-            },
-          );
-          await env.REGISTRY_BUCKET.put(abiKey(decision.tag, "requested"), String(Date.now()));
-        })(),
-      );
-      return json({ building: decision.tag }, 202);
     case "ignore":
       return json({ ignored: decision.reason }, 202);
   }
@@ -174,12 +162,12 @@ async function handleRuns(request: Request, env: Env, path: string[]): Promise<R
 }
 
 export default {
-  async fetch(request, env, ctx): Promise<Response> {
+  async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     const [first, ...rest] = url.pathname.split("/").filter(Boolean);
 
     if (request.method === "POST" && url.pathname === "/webhooks/github") {
-      return handleWebhook(request, env, ctx);
+      return handleWebhook(request, env);
     }
     if (first === "runs") return handleRuns(request, env, rest);
     if (request.method === "GET" && url.pathname === "/status") {

@@ -14,17 +14,12 @@ import { NonRetryableError } from "cloudflare:workflows";
 import { github, hostnames, runConfig } from "./config.ts";
 import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
-import {
-  branchHead,
-  completeCheckRun,
-  pullRequestFiles,
-  type CheckRunOutput,
-} from "./io/github.ts";
+import { branchHead, completeCheckRun, type CheckRunOutput } from "./io/github.ts";
 import { notifySlack } from "./io/publish.ts";
 import { hasErrors, headline, previewMarkdown, type NetworkOutcome } from "./report.ts";
 import {
   checkEnv,
-  ensureAbis,
+  missingAbis,
   generateNetwork,
   loadEnv,
   pinNetwork,
@@ -82,25 +77,6 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
           params.sha ?? branchHead(config.gh, this.env.SOURCE_REPO, this.env.SOURCE_BRANCH),
       );
 
-      if (params.pr) {
-        const pr = params.pr;
-        const touchesEnv = await step.do("check the PR's paths", async () =>
-          (await pullRequestFiles(config.gh, this.env.SOURCE_REPO, pr.number)).some(
-            (path) => path.startsWith("env/") && !path.startsWith("env/connections_viewer."),
-          ),
-        );
-        if (!touchesEnv) {
-          await step.do("report: nothing to preview", () =>
-            this.complete(pr.checkRunId, "success", {
-              title: "No registry changes",
-              summary:
-                "This pull request changes nothing under env/, so the registry is unaffected.",
-            }),
-          );
-          return { sha, outcomes: [], envProblems: [], published: [], shadow: [] };
-        }
-      }
-
       const envProblems = await step.do("check env", async () =>
         checkEnv(config, await loadEnv(config, sha)),
       );
@@ -111,13 +87,19 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
         return { sha, outcomes: [], envProblems, published: [], shadow: [] };
       }
 
-      // A missing tag is built by the build-abis workflow, which takes a few minutes per tag
+      // protocol-internal builds a tag's ABIs when the tag is pushed, in a few minutes; this waits
+      // out a build in flight, and names the tag when there is none
       await step.do(
         "ensure ABIs",
         { retries: { limit: 30, delay: "2 minutes", backoff: "constant" }, timeout: "5 minutes" },
         async () => {
-          const missing = await ensureAbis(config, await loadEnv(config, sha));
-          if (missing.length > 0) throw new Error(`waiting for ABI builds: ${missing.join(", ")}`);
+          const missing = await missingAbis(config, await loadEnv(config, sha));
+          if (missing.length > 0) {
+            throw new Error(
+              `no ABI bundle for ${missing.join(", ")}: protocol-internal's build-abis.yml builds a ` +
+                `tag when it is pushed; run it by hand for a tag pushed before it existed`,
+            );
+          }
         },
       );
 

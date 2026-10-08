@@ -31,10 +31,6 @@
     // release is a change to SOURCE_BRANCH here.
     "SOURCE_REPO": "centrifuge/protocol-internal",
     "SOURCE_BRANCH": "live-v3.3",
-    // Where the ABI build runs (.github/workflows/build-abis.yml)
-    "ABI_BUILD_REPO": "centrifuge/protocol-registry",
-    "ABI_BUILD_WORKFLOW": "build-abis.yml",
-    "ABI_BUILD_REF": "main",
     // How far a publish goes: "shadow" generates and posts what it would publish; "pin" also pins
     // the layer to IPFS, where nothing reads it; "live" also points the registry hostname at it.
     // Any other value is shadow. pin needs PINATA_JWT, live also CLOUDFLARE_API_TOKEN: until then
@@ -45,8 +41,8 @@
     // centrifuge.io, where both hostnames live
     "CLOUDFLARE_ZONE_ID": "b9a43e7d34e470e7ee9b1f41a34cc726",
   },
-  // Published layers by CID (immutable), ABIs by tag (abis/<tag>/<Artifact>.json, written by the
-  // build-abis workflow), and each run's generated registries and reports (runs/<id>/...)
+  // Published layers by CID (immutable), ABIs by tag (abis/<tag>/<Artifact>.json, written by
+  // protocol-internal's build-abis workflow), and each run's generated registries and reports
   "r2_buckets": [
     {
       "binding": "REGISTRY_BUCKET",
@@ -66,7 +62,7 @@
     },
   ],
   // Secrets, seeded from 1Password by the ops-v3 operator script (see README.md, "Operations"):
-  //   GITHUB_APP_ID            the App that reads protocol-internal, posts check runs, dispatches ABI builds
+  //   GITHUB_APP_ID            the App that reads protocol-internal and posts its PR check runs
   //   GITHUB_APP_PRIVATE_KEY   its key in PKCS#8 PEM (`openssl pkcs8 -topk8 -nocrypt -in app.pem`)
   //   GITHUB_WEBHOOK_SECRET    the App's webhook secret
   //   ETHERSCAN_API_KEY        creation blocks for contracts env records without one

@@ -1,10 +1,10 @@
 /**
  * GitHub, as the protocol-registry GitHub App: reading protocol-internal (env at a commit, tags,
- * commits), reporting on its pull requests (check runs), and starting ABI builds in this repository.
+ * commits) and reporting on its pull requests (check runs). The App is installed on protocol-internal
+ * alone, with no Actions permission.
  *
  * The App authenticates with a JWT signed by its private key, exchanged for an installation token
- * that lasts an hour. Both repositories are under one organization installation, so one token serves
- * every call.
+ * that lasts an hour.
  */
 
 import { isReadEnvPath, type EnvTree } from "../core/env.ts";
@@ -322,16 +322,6 @@ export async function pullRequestFiles(
     if (files.length < 100) break;
   }
   return paths;
-}
-
-export async function dispatchWorkflow(
-  gh: GitHub,
-  repo: string,
-  workflow: string,
-  ref: string,
-  inputs: Record<string, string>,
-): Promise<void> {
-  await gh("POST", `/repos/${repo}/actions/workflows/${workflow}/dispatches`, { ref, inputs });
 }
 
 /** Verifies a webhook delivery's X-Hub-Signature-256 against the App's webhook secret. */
