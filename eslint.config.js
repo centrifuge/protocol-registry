@@ -6,7 +6,14 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ["node_modules/**", ".wrangler/**", "cache/**", "out/**", "worker-configuration.d.ts"],
+    ignores: [
+      "node_modules/**",
+      ".wrangler/**",
+      "cache/**",
+      "out/**",
+      "**/dist/**",
+      "worker-configuration.d.ts",
+    ],
   },
   {
     languageOptions: { globals: { ...globals.node } },

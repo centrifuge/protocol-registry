@@ -3,3 +3,4 @@ worker-configuration.d.ts
 cache/
 out/
 .wrangler/
+dist/

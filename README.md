@@ -8,12 +8,14 @@ deploy block and, once out of use, the block its indexer listener ends at. Index
 The registry is generated from the env configs that protocol-internal's deploy scripts write. This
 repository holds the generator and runs it as a Cloudflare Worker, triggered by GitHub. It replaces
 `script/registry/` and the `registry.yml` workflow, which each live branch of protocol-internal used to
-carry a copy of.
+carry a copy of. Its layer reading and verification are also published as the package
+[`@centrifuge/registry-core`](#package), for consumers that pin a registry head.
 
 - [How it works](#how-it-works)
 - [Inputs: protocol-internal's env/](#inputs-protocol-internals-env)
 - [The published registry](#the-published-registry)
 - [ABIs](#abis)
+- [Package](#package)
 - [Setup](#setup)
 - [Operations](#operations)
 - [Moving off protocol-internal's pipeline](#moving-off-protocol-internals-pipeline)
@@ -66,7 +68,7 @@ to produce byte-identical layers and validation reports (see the commit that add
 I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags, commits, ABIs and
 explorer data through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
 `scripts/generate.ts` runs the same thing locally. `src/core/` also holds layer verification and
-history diffing for other consumers, exported from `src/core/index.ts`.
+history diffing for other consumers, published as [`@centrifuge/registry-core`](#package).
 
 ## Inputs: protocol-internal's env/
 
@@ -235,6 +237,102 @@ at, waits up to an hour for a build in flight, then fails naming the tag.
 two sources define an artifact of the same name, the first in sorted order wins, skipping tests, as
 the old ABI cache did and the workflow does.
 
+## Package
+
+`@centrifuge/registry-core` is `src/core/index.ts` and the files it imports, built into
+`packages/registry-core/dist/` (JavaScript and declarations, ES modules; on Node 22.12 or later a
+CommonJS file loads it with `require`) and published to GitHub Packages. The Worker does not use the build:
+it imports `src/core/` by relative path. `src/core/index.ts` documents every export (shipped as
+`dist/index.d.ts`); by group:
+
+- **Chain walking:** `collectRegistryChain`, `isAncestor`, `flattenRegistryChain`,
+  `flattenRegistryAbis`, `isRegistryDocument`, `describeLayer`, `slimLayer`, `DEFAULT_MAX_DEPTH`
+- **Address history:** `chainAddressHistory`, `diffAddressHistories`, `flattenRetired`
+- **Verification:** `verifyLayer`, `layerFromBytes`, `LayerVerificationError`
+- **Networks:** `NETWORKS`
+
+Each group also exports the types its functions take and return.
+
+The library does no I/O: it reads no network, file or environment, and a chain walk reaches layers
+only through the `fetchLayer` the caller passes in.
+
+### What verification proves
+
+`verifyLayer(cid, bytes)` proves that the bytes are the ones the CID names: the sha2-256 digest for a
+raw CID, and for a dag-pb CID the root of the UnixFS file rebuilt from the bytes with 262144-byte
+chunks, raw leaves, 174 links per node and no wrapping directory. It does not prove that the CID is
+the right head, which is the caller's pin, nor anything about the layers below it.
+`layerFromBytes(cid, bytes)` verifies and then parses the bytes as a layer.
+
+A walk is only as trustworthy as what feeds it. A pinned head vouches for the chain under it only
+when the head is `layerFromBytes(pinnedCid, bytes)` and `fetchLayer` returns
+`layerFromBytes(cid, bytes)` on every layer's bytes as served, before any parsing.
+
+- `stopAt` (an option of `collectRegistryChain`) ends the walk before fetching a listed CID.
+- `isAncestor(head, ancestor, fetchLayer)` is true when the ancestor is the head or a layer below it,
+  false when the walk reaches the base snapshot first, and throws when the walk cannot finish.
+
+`collectRegistryChain` returns failures (`complete`, `reason`, `fatal`) rather than throwing, and
+both functions compare CIDs as strings, so pass canonical CIDv1. A `fetchLayer` that retries
+gateways lets the last `LayerVerificationError` escape unwrapped (see `LayerVerificationError` and
+`FetchLayer`).
+
+`layerFromBytes` keeps integers above 2^53 (a `chainSelector`) exact through `JSON.stringify` using
+`JSON.parse` source text access (revivers' `context.source` and `JSON.rawJSON`), which Node 22.12,
+the package's floor, has; on a runtime without it `layerFromBytes` throws.
+
+### Install
+
+Depend on an exact version, never a range or the `snapshot` tag: `snapshot` names the newest publish
+from any ref, including a dispatched feature branch, and the commit suffix does not sort by time.
+`<sha7>` below is the first 7 characters of a commit whose publish run succeeded;
+`npm view @centrifuge/registry-core versions --registry https://npm.pkg.github.com` lists what
+exists.
+
+The package is private, like this repository. Reading it needs `NODE_AUTH_TOKEN` set to a classic
+personal access token with `read:packages`, or, in GitHub Actions, the workflow's `GITHUB_TOKEN` with
+`packages: read` once the package's settings grant the consuming repository Actions access (see
+[Setup](#setup)). Either way the consumer's `.npmrc` carries the token line:
+
+```
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+Then resolve the scope and add the dependency in one of two ways:
+
+- Where every `@centrifuge/*` package may come from GitHub Packages, add the `.npmrc` scope line
+  `@centrifuge:registry=https://npm.pkg.github.com`, which routes all of them there, and run
+  `npm install --save-exact @centrifuge/registry-core@0.1.0-sha.<sha7>` (pnpm:
+  `pnpm add --save-exact ...`).
+- Where other `@centrifuge/*` packages come from npmjs, put
+  `"@centrifuge/registry-core": "gh:0.1.0-sha.<sha7>"` in `package.json` and run `pnpm install`.
+  `gh:` is pnpm's built-in alias for GitHub Packages (pnpm 11.1 or later) and routes only this
+  package.
+
+pnpm 11's `minimumReleaseAge` (1440 minutes by default) refuses a version published more recently, so
+a fresh snapshot needs `@centrifuge/registry-core` in `minimumReleaseAgeExclude`.
+
+TypeScript finds the types through `types` under `moduleResolution` `node` (`node10`), and through
+`exports` under `nodenext` and `bundler`. A CommonJS file uses `module: commonjs` with
+`moduleResolution: node`, or `nodenext` on TypeScript 5.8 or later; `node16` does not work for a
+CommonJS file.
+
+Installing adds about 60 packages, almost all of them dependencies of `ipfs-unixfs-importer`, which
+`verifyLayer` and `layerFromBytes` use. A bundler drops them for a consumer that calls neither:
+`collectRegistryChain`, `isAncestor` and `flattenRegistryChain` bundle to about 2 kB minified
+(esbuild 0.28.1), and adding `verifyLayer` or `layerFromBytes` makes it about 88 kB.
+
+### Versions
+
+Every publish is `<version>-sha.<first 7 characters of the commit>` (`0.1.0-sha.abc1234`), where
+`<version>` is the `version` in `packages/registry-core/package.json`, under the dist-tag
+`snapshot`. The workflow `publish-registry-core.yml` publishes on a push to `main` that touches
+`src/core/`, `packages/registry-core/`, `scripts/build-package.ts`, `scripts/check-package*`,
+`scripts/core-imports.ts`, `LICENSE`, the root `package.json`, `pnpm-lock.yaml` or the workflow itself, and on
+manual dispatch. It typechecks, tests and runs the smoke check first, and skips a version that
+already exists. A commit whose 7 characters are all digits starting with a zero publishes nothing:
+npm would rename that version, so the workflow fails instead.
+
 ## Setup
 
 What exists outside this repository, and where it is managed:
@@ -246,6 +344,7 @@ What exists outside this repository, and where it is managed:
 | Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                |
 | Worker secrets                                                                                                          | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
 | The GitHub App                                                                                                          | GitHub organization settings                                                                 |
+| Which repositories' Actions may read `@centrifuge/registry-core`                                                        | the package's settings on GitHub, Manage Actions access                                      |
 
 The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App
@@ -350,6 +449,8 @@ pnpm typecheck
 pnpm lint
 pnpm format:check
 pnpm cf-typegen  # after changing wrangler.jsonc
+pnpm build:package  # builds the package into packages/registry-core/dist
+pnpm check:package  # smoke check of the packed package; needs the network
 ```
 
 Tests are JavaScript, as the scripts they came from tested with node:test, and run the TypeScript
@@ -378,5 +479,9 @@ curl -fsS -o "<tmp>/<cid>" "https://centrifuge-files.mypinata.cloud/ipfs/<cid>" 
 Commit the bytes as served, never re-serialised. A tampered layer is a real one with a byte flipped
 inside the test, never a committed file.
 
-`src/core/index.ts` is the library's entry point, and `test/core-index.test.js` fails when an export
-is added, renamed or dropped.
+`src/core/index.ts` is the package's entry point (see [Package](#package)). `test/core-index.test.js`
+fails when an export is added, renamed or dropped, and `test/package.test.js` when the package's
+dependencies differ from the root's pins for what `src/core/` imports. `pnpm check:package` imports
+the packed build from outside the repository and asserts what a consumer receives: the exports, the
+shipped files, the types (compiled under `bundler`, `nodenext` and `node10` resolution), verification
+of real layers, and a `chainSelector` above 2^53 surviving `layerFromBytes`.

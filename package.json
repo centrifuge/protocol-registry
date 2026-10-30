@@ -16,7 +16,9 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "build:package": "node scripts/build-package.ts",
+    "check:package": "node scripts/check-package.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261007.1",
