@@ -7,8 +7,8 @@
  * small: shas, counts, findings.
  */
 
-import { slimLayer, fetchRegistryFromIpfs, type LayerCache } from "./io/ipfs.ts";
-import { collectRegistryChain } from "./core/chain.ts";
+import { fetchRegistryFromIpfs, type LayerCache } from "./io/ipfs.ts";
+import { collectRegistryChain, slimLayer } from "./core/chain.ts";
 import { registryPointer, type EnvTree } from "./core/env.ts";
 import { validateEnvTree } from "./core/env-schema.ts";
 import { generateRegistry, RefusedError, type Logger, type RegistryMode } from "./core/generate.ts";

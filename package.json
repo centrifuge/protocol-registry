@@ -28,5 +28,9 @@
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.1",
     "wrangler": "^4.148.0"
+  },
+  "dependencies": {
+    "ipfs-unixfs-importer": "17.1.1",
+    "multiformats": "14.0.5"
   }
 }

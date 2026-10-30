@@ -1,6 +1,7 @@
 /**
  * Shapes of the documents the generator reads and writes. The published schema is documented in
- * README.md ("Schema"); these types follow it, loosened where old layers or env files are looser.
+ * the README of centrifuge/protocol-registry ("Schema"); these types follow it, loosened where
+ * old layers or env files are looser.
  */
 
 export type Network = "mainnet" | "testnet";

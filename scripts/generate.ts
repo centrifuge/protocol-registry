@@ -24,8 +24,8 @@ import { generateRegistry, type Logger, type RegistryMode } from "../src/core/ge
 import { validateRegistry } from "../src/core/validate.ts";
 import { NETWORKS, type Network } from "../src/core/types.ts";
 import { explorerCreationBlocks } from "../src/io/explorers.ts";
-import { fetchRegistryFromIpfs, slimLayer, type LayerCache } from "../src/io/ipfs.ts";
-import { collectRegistryChain } from "../src/core/chain.ts";
+import { fetchRegistryFromIpfs, type LayerCache } from "../src/io/ipfs.ts";
+import { collectRegistryChain, slimLayer } from "../src/core/chain.ts";
 
 const HOSTNAMES: Record<Network, string> = {
   mainnet: "registry.centrifuge.io",

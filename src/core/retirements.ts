@@ -121,8 +121,11 @@ export interface AddressRecord {
   contract: string;
   /** Every name it was published under. */
   names: Set<string>;
+  /** The deploy block of the first layer entry that carried one, or null when none did. */
   blockNumber: number | null;
+  /** Index into the `layers` given to `chainAddressHistory` of the oldest layer publishing it. */
   firstLayer: number;
+  /** Index into the same `layers` of the newest layer publishing it. */
   lastLayer: number;
 }
 
@@ -138,6 +141,8 @@ export interface AddressHistory {
  * name was tombstoned.
  *
  * @param layers - Registry documents ordered oldest → newest
+ * @param chainId - The chain's id as a decimal string, as keyed under `chains`
+ * @returns The history; layer numbers in it are indices into `layers`
  */
 export function chainAddressHistory(layers: Layer[], chainId: string): AddressHistory {
   const addresses = new Map<string, AddressRecord>();
@@ -179,10 +184,10 @@ export function chainAddressHistory(layers: Layer[], chainId: string): AddressHi
 export type RetiredByChain = Record<string, Record<string, RetiredEntry>>;
 
 /**
- * Retirements in force once the chain is flattened: chainId → lowercase address → entry, the newest
- * layer winning per address.
+ * Retirements in force once the chain is flattened, the newest layer winning per address.
  *
  * @param layers - Registry documents in oldest → newest order
+ * @returns The retirements, by chain and address
  */
 export function flattenRetired(layers: Layer[]): RetiredByChain {
   const out: RetiredByChain = {};

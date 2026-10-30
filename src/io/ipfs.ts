@@ -158,9 +158,3 @@ async function discardBody(response: Response): Promise<void> {
     // Already errored or consumed; nothing to release.
   }
 }
-
-/** The same layer without its ABI bodies: a chain walk needs which ABIs a layer carries, not them. */
-export function slimLayer(layer: Layer): Layer {
-  if (!layer.abis) return layer;
-  return { ...layer, abis: Object.fromEntries(Object.keys(layer.abis).map((name) => [name, []])) };
-}

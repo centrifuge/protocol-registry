@@ -60,12 +60,13 @@ manual POST /runs                     1. the commit: the PR head, or the release
   does can change what registry.centrifuge.io serves. A pinned layer nothing points at is invisible to
   consumers, which makes `pin` the place to inspect real output before going `live`.
 
-The generator (`src/core/`) is a port of `script/registry/` from protocol-internal at
+The generator in `src/core/` is a port of `script/registry/` from protocol-internal at
 [centrifuge/protocol-internal#460](https://github.com/centrifuge/protocol-internal/pull/460), verified
 to produce byte-identical layers and validation reports (see the commit that added it). It has no
 I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags, commits, ABIs and
 explorer data through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
-`scripts/generate.ts` runs the same thing locally.
+`scripts/generate.ts` runs the same thing locally. `src/core/` also holds layer verification and
+history diffing for other consumers, exported from `src/core/index.ts`.
 
 ## Inputs: protocol-internal's env/
 
@@ -100,7 +101,8 @@ If the chain cannot be walked in full — a broken pointer, an unreachable layer
 layers — generation is refused rather than emitting an inflated delta (`allowPartialChain` overrides
 this for a manual run). If the tip itself cannot be read, generation is refused with no override:
 there is nothing to measure against, and the result would present an outage as a base registry. Every
-layer must declare the network being generated; a layer of the other network fails the run.
+layer must declare the network being generated; a layer of the other network, or one declaring
+none, fails the run.
 
 Fetched layers are cached in R2 by CID (`layers/<cid>.json`), since a CID's contents never change.
 
@@ -351,5 +353,30 @@ pnpm cf-typegen  # after changing wrangler.jsonc
 ```
 
 Tests are JavaScript, as the scripts they came from tested with node:test, and run the TypeScript
-sources directly (Node 22.18+). Fixtures are built inline, so each test's input sits next to its
-assertions.
+sources directly (Node 22.18+). Synthetic layers are built inline, so each test's input sits next
+to its assertions (`layer()`, `chain()` and `contract()` in `test/helpers.js`).
+
+Real layers live under `test/fixtures/layers/<cid>.json.gz`: every layer of the mainnet chain from
+head `bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi` down (14 layers) and of the
+testnet chain from head `bafkreifwkz42zr3vxqo3767ifis32nuhsfbm4h7ubd5aei45wthawxdumm` down (53
+layers), gzip of the bytes a gateway served. `realLayerBytes(cid)`, `realChain(head)` and `realLayerFetch()`
+in `test/helpers.js` read them; `realLayerFetch()` returns `{ fetchImpl, calls }`, and `fetchImpl`
+goes to `fetchRegistryFromIpfs`, so a test walks them through the parse path a gateway response
+takes. `verifyLayer` proves each file against its CID, so a fixture needs no other provenance.
+
+The fixtures are a frozen snapshot of both chains at those two heads (the constants in
+`test/helpers.js`), not a mirror of the live chains. The heads pin counts and stop points in
+`test/verify.test.js`, `test/chain.test.js` and `test/address-history.test.js`. Add a layer only
+when it brings a shape no fixture has (a dag-pb file over 174 chunks, say), then update those three
+files, and keep `OLD_MAINNET_HEAD` the head's grandparent or re-derive what uses it. To fetch one:
+
+```bash
+curl -fsS -o "<tmp>/<cid>" "https://centrifuge-files.mypinata.cloud/ipfs/<cid>" \
+  && gzip -9 -n -c "<tmp>/<cid>" > test/fixtures/layers/<cid>.json.gz
+```
+
+Commit the bytes as served, never re-serialised. A tampered layer is a real one with a byte flipped
+inside the test, never a committed file.
+
+`src/core/index.ts` is the library's entry point, and `test/core-index.test.js` fails when an export
+is added, renamed or dropped.

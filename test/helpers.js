@@ -1,10 +1,13 @@
 /**
  * @fileoverview Fixture builders for the registry script tests.
  *
- * Registry documents are small enough to build inline, which keeps each test's input visible next
- * to its assertions instead of in a separate JSON file.
+ * Most registry documents are small enough to build inline, which keeps each test's input visible
+ * next to its assertions. The real published layers of both chains live under
+ * test/fixtures/layers/ and are read through the helpers at the bottom.
  */
 
+import { readFileSync, readdirSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
 
 /**
@@ -114,4 +117,66 @@ export function memoryCache(entries = {}) {
  */
 export function ipfsFetcher(fetchImpl = fakeFetch({}).fetchImpl) {
   return (cid) => fetchRegistryFromIpfs(cid, { fetchImpl });
+}
+
+const LAYER_FIXTURES = new URL("./fixtures/layers/", import.meta.url);
+
+/** Head of the mainnet chain the fixtures hold. */
+export const MAINNET_HEAD = "bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi";
+/** Head of the testnet chain the fixtures hold. */
+export const TESTNET_HEAD = "bafkreifwkz42zr3vxqo3767ifis32nuhsfbm4h7ubd5aei45wthawxdumm";
+/** The mainnet layer published before the last two; the head's grandparent. */
+export const OLD_MAINNET_HEAD = "bafkreif3upmmqo5ulmu2clbgkgoy2w5qtw5frrm5hzj5tqme4rczlpgf7m";
+
+/** Every CID that has a real layer committed under test/fixtures/layers/. */
+export function realLayerCids() {
+  return readdirSync(LAYER_FIXTURES)
+    .filter((name) => name.endsWith(".json.gz"))
+    .map((name) => name.slice(0, -".json.gz".length))
+    .sort();
+}
+
+/** The bytes a gateway served for this CID, exactly as committed. */
+export function realLayerBytes(cid) {
+  return new Uint8Array(gunzipSync(readFileSync(new URL(`${cid}.json.gz`, LAYER_FIXTURES))));
+}
+
+/** The parsed document of a real layer. */
+export function realLayer(cid) {
+  return JSON.parse(new TextDecoder().decode(realLayerBytes(cid)));
+}
+
+/**
+ * Every real layer from a head back to its base snapshot, newest first, with the bytes each CID
+ * addresses.
+ */
+export function realChain(headCid) {
+  const chain = [];
+  let cid = headCid;
+  while (cid) {
+    const bytes = realLayerBytes(cid);
+    chain.push({ cid, bytes });
+    cid = JSON.parse(new TextDecoder().decode(bytes)).previousRegistry?.ipfsHash ?? null;
+  }
+  return chain;
+}
+
+/**
+ * A fetch-shaped function serving the real layer bytes by CID, as a gateway would; an unknown CID
+ * is a 404. Plug it into fetchRegistryFromIpfs for the exact parse path a gateway response takes.
+ *
+ * @returns {{fetchImpl: Function, calls: string[]}} `calls` holds the CID of each request
+ */
+export function realLayerFetch() {
+  const known = new Set(realLayerCids());
+  const calls = [];
+
+  async function fetchImpl(url) {
+    const cid = url.split("/").pop();
+    calls.push(cid);
+    if (!known.has(cid)) return new Response("not found", { status: 404 });
+    return new Response(realLayerBytes(cid), { status: 200 });
+  }
+
+  return { fetchImpl, calls };
 }

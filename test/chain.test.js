@@ -5,9 +5,25 @@ import {
   collectRegistryChain,
   flattenRegistryAbis,
   flattenRegistryChain,
+  isAncestor,
+  slimLayer,
   summarizeAccumulatedState,
 } from "../src/core/chain.ts";
-import { chain, contract, fakeFetch, ipfsFetcher, layer } from "./helpers.js";
+import { layerFromBytes } from "../src/core/verify.ts";
+import { fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
+import {
+  MAINNET_HEAD,
+  OLD_MAINNET_HEAD,
+  TESTNET_HEAD,
+  chain,
+  contract,
+  fakeFetch,
+  ipfsFetcher,
+  layer,
+  realChain,
+  realLayerBytes,
+  realLayerFetch,
+} from "./helpers.js";
 
 test("flattenRegistryChain lets the newest layer win", () => {
   const accumulated = flattenRegistryChain([
@@ -302,9 +318,22 @@ test("collectRegistryChain refuses a mid-chain layer from the wrong network", as
   assert.deepEqual(result.accumulated, {});
 });
 
-test("collectRegistryChain accepts a layer that declares no network", async () => {
-  // Every published layer carries `network` today, but treating an absent one as a mismatch
-  // would turn a missing label on an old base snapshot into a hard generation failure.
+test("collectRegistryChain refuses a tip that declares no network when one is expected", async () => {
+  const tip = layer({ version: "v2", network: null, chains: { 1: chain({ hub: "0xhub" }) } });
+
+  const result = await collectRegistryChain(tip, {
+    expectedNetwork: "mainnet",
+    fetchLayer: ipfsFetcher(),
+  });
+
+  assert.equal(result.complete, false);
+  assert.match(result.reason, /declares no network.*"mainnet" is being generated/);
+  assert.equal(result.fatal, true);
+  assert.deepEqual(result.accumulated, {});
+  assert.deepEqual(result.layers, []);
+});
+
+test("collectRegistryChain refuses a mid-chain layer that declares no network when one is expected", async () => {
   const base = layer({ version: "v1", network: null, chains: { 1: chain({ hub: "0xhub" }) } });
   const { fetchImpl } = fakeFetch({ cidBase: base });
   const tip = layer({ version: "v2", chains: {}, previousCid: "cidBase" });
@@ -314,9 +343,64 @@ test("collectRegistryChain accepts a layer that declares no network", async () =
     fetchLayer: ipfsFetcher(fetchImpl),
   });
 
+  assert.equal(result.complete, false);
+  assert.match(result.reason, /declares no network/);
+  assert.equal(result.fatal, true);
+  assert.deepEqual(result.accumulated, {});
+});
+
+test("collectRegistryChain refuses a layer whose network is not a string", async () => {
+  const tip = layer({ version: "v2", network: 1, chains: {} });
+
+  const result = await collectRegistryChain(tip, {
+    expectedNetwork: "mainnet",
+    fetchLayer: ipfsFetcher(),
+  });
+
+  assert.equal(result.fatal, true);
+  assert.match(result.reason, /declares no network/);
+});
+
+test("collectRegistryChain accepts layers without a network when none is expected", async () => {
+  const base = layer({ version: "v1", network: null, chains: { 1: chain({ hub: "0xhub" }) } });
+  const { fetchImpl } = fakeFetch({ cidBase: base });
+  const tip = layer({ version: "v2", network: null, chains: {}, previousCid: "cidBase" });
+
+  const result = await collectRegistryChain(tip, { fetchLayer: ipfsFetcher(fetchImpl) });
+
   assert.equal(result.complete, true);
   assert.equal(result.reason, null);
   assert.equal(result.accumulated["1"].contracts.hub.address, "0xhub");
+});
+
+test("collectRegistryChain walks both real chains under their own network, every layer declaring it", async () => {
+  const { fetchImpl } = realLayerFetch();
+  const fetchLayer = ipfsFetcher(fetchImpl);
+
+  for (const [head, network, length] of [
+    [MAINNET_HEAD, "mainnet", 14],
+    [TESTNET_HEAD, "testnet", 53],
+  ]) {
+    const result = await collectRegistryChain(await fetchLayer(head), {
+      fetchLayer,
+      expectedNetwork: network,
+    });
+    assert.equal(result.complete, true, result.reason ?? "");
+    assert.equal(result.layers.length, length);
+  }
+});
+
+test("collectRegistryChain refuses the real testnet chain when mainnet is expected", async () => {
+  const { fetchImpl } = realLayerFetch();
+  const fetchLayer = ipfsFetcher(fetchImpl);
+
+  const result = await collectRegistryChain(await fetchLayer(TESTNET_HEAD), {
+    fetchLayer,
+    expectedNetwork: "mainnet",
+  });
+
+  assert.equal(result.fatal, true);
+  assert.match(result.reason, /declares network "testnet"/);
 });
 
 test("collectRegistryChain refuses a tip that is not a registry document", async () => {
@@ -390,4 +474,289 @@ test("flattenRegistryAbis collects every ABI name published across the chain", (
     "Root",
     "Spoke",
   ]);
+});
+
+function countingFetcher() {
+  const { fetchImpl } = realLayerFetch();
+  const fetched = [];
+  const fetchLayer = (cid) => {
+    fetched.push(cid);
+    return fetchRegistryFromIpfs(cid, { fetchImpl });
+  };
+  return { fetchLayer, fetched };
+}
+
+test("collectRegistryChain with stopAt stops before fetching the layer it names", async () => {
+  const { fetchLayer, fetched } = countingFetcher();
+  const tip = await fetchLayer(MAINNET_HEAD);
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer,
+    stopAt: new Set([OLD_MAINNET_HEAD]),
+  });
+
+  assert.equal(result.stoppedAt, OLD_MAINNET_HEAD);
+  assert.equal(result.layers.length, 2);
+  assert.equal(fetched.length, 2, "the head and the one layer above the stop");
+  assert.ok(!fetched.includes(OLD_MAINNET_HEAD));
+  assert.equal(result.complete, false);
+  assert.equal(result.reason, null);
+  assert.equal(result.fatal, false);
+});
+
+test("collectRegistryChain with stopAt accumulates only the layers above the stop", async () => {
+  const stop = realChain(MAINNET_HEAD).map(({ cid }) => cid)[2];
+  assert.equal(stop, OLD_MAINNET_HEAD);
+  const { fetchLayer } = countingFetcher();
+  const tip = await fetchLayer(MAINNET_HEAD);
+  const above = [await fetchLayer(tip.previousRegistry.ipfsHash), tip].map(slimLayer);
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer: async (cid) => slimLayer(await fetchLayer(cid)),
+    stopAt: new Set([OLD_MAINNET_HEAD]),
+  });
+
+  assert.deepEqual(result.accumulated, flattenRegistryChain(above));
+  assert.deepEqual([...result.accumulatedAbis], [...flattenRegistryAbis(above)]);
+});
+
+test("collectRegistryChain without stopAt walks the whole real chain and reports no stop", async () => {
+  const { fetchLayer, fetched } = countingFetcher();
+  const tip = await fetchLayer(MAINNET_HEAD);
+
+  const result = await collectRegistryChain(tip, { fetchLayer });
+
+  assert.equal(fetched.length, 14);
+  assert.equal(result.complete, true);
+  assert.equal(result.stoppedAt, null);
+});
+
+test("collectRegistryChain with stopAt never matches the tip's own CID", async () => {
+  const { fetchLayer, fetched } = countingFetcher();
+  const tip = await fetchLayer(MAINNET_HEAD);
+
+  const result = await collectRegistryChain(tip, { fetchLayer, stopAt: new Set([MAINNET_HEAD]) });
+
+  assert.equal(result.stoppedAt, null);
+  assert.equal(result.complete, true);
+  assert.equal(fetched.length, 14);
+});
+
+test("collectRegistryChain with a stopAt that is not in the chain walks to the base", async () => {
+  const { fetchLayer } = countingFetcher();
+  const tip = await fetchLayer(MAINNET_HEAD);
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer,
+    stopAt: new Set([TESTNET_HEAD]),
+  });
+
+  assert.equal(result.stoppedAt, null);
+  assert.equal(result.complete, true);
+});
+
+test("collectRegistryChain stops at stopAt even when the layer below the tip is the stop", async () => {
+  const base = layer({ version: "v1", chains: { 1: chain({ hub: "0xhub" }) } });
+  const { fetchImpl, calls } = fakeFetch({ cidBase: base });
+  const tip = layer({
+    version: "v2",
+    chains: { 1: chain({ vault: "0xvault" }) },
+    previousCid: "cidBase",
+  });
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer: ipfsFetcher(fetchImpl),
+    stopAt: new Set(["cidBase"]),
+  });
+
+  assert.equal(calls.length, 0);
+  assert.equal(result.stoppedAt, "cidBase");
+  assert.deepEqual(Object.keys(result.accumulated["1"].contracts), ["vault"]);
+});
+
+test("collectRegistryChain reports no stop when the walk fails before reaching it", async () => {
+  const tip = layer({ version: "v2", chains: {}, previousCid: "cidMissing" });
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer: ipfsFetcher(fakeFetch({}).fetchImpl),
+    stopAt: new Set(["cidFar"]),
+  });
+
+  assert.equal(result.stoppedAt, null);
+  assert.equal(result.complete, false);
+  assert.match(result.reason, /could not fetch cidMissing/);
+});
+
+test("isAncestor is true for a real layer two steps below the head", async () => {
+  const { fetchLayer } = countingFetcher();
+
+  assert.equal(await isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, fetchLayer), true);
+});
+
+test("isAncestor fetches the head and the ancestor's child, never the ancestor", async () => {
+  const { fetchLayer, fetched } = countingFetcher();
+
+  await isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, fetchLayer);
+
+  assert.equal(fetched.length, 2);
+  assert.ok(!fetched.includes(OLD_MAINNET_HEAD));
+});
+
+test("isAncestor is true when the ancestor is the head, without fetching", async () => {
+  const { fetchLayer, fetched } = countingFetcher();
+
+  assert.equal(await isAncestor(MAINNET_HEAD, MAINNET_HEAD, fetchLayer), true);
+  assert.equal(fetched.length, 0);
+});
+
+test("isAncestor is true for the base snapshot of the chain", async () => {
+  const { fetchLayer } = countingFetcher();
+  const base = realChain(MAINNET_HEAD).at(-1).cid;
+
+  assert.equal(await isAncestor(MAINNET_HEAD, base, fetchLayer), true);
+});
+
+test("isAncestor is false for a testnet layer against the mainnet head", async () => {
+  const { fetchLayer } = countingFetcher();
+
+  assert.equal(await isAncestor(MAINNET_HEAD, TESTNET_HEAD, fetchLayer), false);
+});
+
+test("isAncestor is false for a head's descendant", async () => {
+  const { fetchLayer } = countingFetcher();
+
+  assert.equal(await isAncestor(OLD_MAINNET_HEAD, MAINNET_HEAD, fetchLayer), false);
+});
+
+test("isAncestor throws when the chain is broken before it reaches the ancestor", async () => {
+  const { fetchImpl } = realLayerFetch();
+  const brokenAt = realChain(MAINNET_HEAD)[1].cid;
+  const fetchLayer = (cid) =>
+    fetchRegistryFromIpfs(cid, {
+      fetchImpl: async (url) =>
+        url.endsWith(brokenAt) ? new Response("gone", { status: 404 }) : fetchImpl(url),
+    });
+
+  await assert.rejects(
+    () => isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, fetchLayer),
+    new RegExp(`could not fetch ${brokenAt}`),
+  );
+});
+
+test("isAncestor throws when the head cannot be fetched", async () => {
+  const { fetchImpl } = realLayerFetch();
+
+  await assert.rejects(
+    () => isAncestor("bafkreinothere", OLD_MAINNET_HEAD, ipfsFetcher(fetchImpl)),
+    /bafkreinothere/,
+  );
+});
+
+test("isAncestor throws when the walk is longer than maxDepth", async () => {
+  const { fetchLayer } = countingFetcher();
+
+  await assert.rejects(
+    () => isAncestor(MAINNET_HEAD, TESTNET_HEAD, fetchLayer, { maxDepth: 3 }),
+    /longer than maxDepth 3/,
+  );
+});
+
+test("isAncestor throws on a cycle rather than answering false", async () => {
+  const looping = layer({ version: "v2", chains: {}, previousCid: "cidLoop" });
+  const { fetchImpl } = fakeFetch({ cidLoop: looping });
+
+  await assert.rejects(
+    () => isAncestor("cidLoop", "cidElsewhere", ipfsFetcher(fetchImpl)),
+    /cycle detected/,
+  );
+});
+
+test("isAncestor throws on a network refusal rather than answering false", async () => {
+  const { fetchLayer } = countingFetcher();
+
+  await assert.rejects(
+    () => isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, fetchLayer, { expectedNetwork: "testnet" }),
+    /declares network "mainnet"/,
+  );
+});
+
+test("isAncestor still answers true when the stop sits at the maxDepth bound", async () => {
+  const { fetchLayer } = countingFetcher();
+
+  assert.equal(await isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, fetchLayer, { maxDepth: 2 }), true);
+});
+
+test("isAncestor throws when the head is not a registry document", async () => {
+  await assert.rejects(
+    () => isAncestor("cidHead", "cidOther", async () => ({ detail: "error page" })),
+    /cannot walk from cidHead: tip document is not a registry/,
+  );
+});
+
+function verifyingFetcher(tamperedCid) {
+  return async (cid) => {
+    const bytes = new Uint8Array(realLayerBytes(cid));
+    if (cid === tamperedCid) bytes[10] ^= 0x01;
+    return layerFromBytes(cid, bytes);
+  };
+}
+
+test("collectRegistryChain is fatal when a layer fails verification mid-chain", async () => {
+  const tampered = realChain(MAINNET_HEAD)[5].cid;
+  const fetchLayer = verifyingFetcher(tampered);
+
+  const result = await collectRegistryChain(await fetchLayer(MAINNET_HEAD), { fetchLayer });
+
+  assert.equal(result.fatal, true);
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.layers, []);
+  assert.deepEqual(result.accumulated, {});
+  assert.ok(result.reason.includes(tampered), result.reason);
+});
+
+test("collectRegistryChain over verified fixtures with nothing tampered completes", async () => {
+  const fetchLayer = verifyingFetcher(null);
+
+  const result = await collectRegistryChain(await fetchLayer(MAINNET_HEAD), { fetchLayer });
+
+  assert.equal(result.complete, true);
+  assert.equal(result.layers.length, 14);
+});
+
+test("collectRegistryChain keeps an ordinary fetch failure non-fatal", async () => {
+  const tip = layer({ version: "v2", chains: {}, previousCid: "cidMissing" });
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer: async () => {
+      throw new Error("gateway down");
+    },
+  });
+
+  assert.equal(result.fatal, false);
+  assert.equal(result.reason, "gateway down");
+});
+
+test("isAncestor throws when a layer fails verification before it reaches the ancestor", async () => {
+  const tampered = realChain(MAINNET_HEAD)[1].cid;
+
+  await assert.rejects(
+    () => isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, verifyingFetcher(tampered)),
+    new RegExp(`cannot walk from ${MAINNET_HEAD}: .*${tampered}.*failed verification`),
+  );
+});
+
+test("isAncestor honours expectedNetwork when it matches", async () => {
+  const { fetchLayer } = countingFetcher();
+
+  assert.equal(
+    await isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, fetchLayer, { expectedNetwork: "mainnet" }),
+    true,
+  );
+});
+
+test("slimLayer keeps which ABIs a layer carries and drops their bodies", () => {
+  const full = { chains: {}, abis: { Hub: [{ type: "function", name: "x" }], Spoke: [] } };
+
+  assert.deepEqual(slimLayer(full).abis, { Hub: [], Spoke: [] });
+  assert.equal(full.abis.Hub.length, 1, "the input is not modified");
 });

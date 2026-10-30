@@ -14,9 +14,12 @@
  * flattened, so callers never have to know that `flattenRegistryChain` requires oldest → newest
  * ordering (feeding it the other way round silently yields stale winners).
  *
- * Network I/O (gateways, layer cache) lives in ../io/ipfs.ts and reaches this module as `fetchLayer`.
+ * `isAncestor` answers whether one layer lies below another in that list.
+ *
+ * Network I/O reaches this module only as `fetchLayer` (in this repository, ../io/ipfs.ts).
  */
 
+import { LayerVerificationError } from "./layer-verification-error.ts";
 import type { AccumulatedState, Layer } from "./types.ts";
 
 // Chain length guard. Cycles are caught precisely by the `seen` set below, so this only bounds
@@ -25,6 +28,12 @@ import type { AccumulatedState, Layer } from "./types.ts";
 // this guard fails generation rather than silently truncating the comparison.
 export const DEFAULT_MAX_DEPTH = 500;
 
+/**
+ * Fetches the layer a CID addresses. A rejection ends the walk, its message becoming the `reason`.
+ *
+ * The walk trusts what this returns. For a pinned head to vouch for the whole chain, fetch the
+ * layer's bytes and return `layerFromBytes(cid, bytes)`, which proves them against the CID.
+ */
 export type FetchLayer = (cid: string) => Promise<Layer>;
 
 export interface CollectOptions {
@@ -34,19 +43,42 @@ export interface CollectOptions {
    * completes; only one longer than that is refused.
    */
   maxDepth?: number;
-  /** When set, every layer must declare this network; see networkMismatchReason. */
+  /**
+   * When set, every layer, tip included, must declare this network. One that declares another, or
+   * none, is refused, fatal.
+   */
   expectedNetwork?: string | null;
+  /**
+   * CIDs at which the walk stops without fetching them. Checked against each layer's
+   * `previousRegistry.ipfsHash`, so the tip's own CID, which this function never sees, is never
+   * matched. Compared as strings, so pass canonical CIDs (see `verifyLayer`).
+   */
+  stopAt?: ReadonlySet<string>;
 }
 
 export interface CollectedChain {
-  /** Ordered oldest → newest. */
+  /**
+   * Ordered oldest → newest. The CID of `layers[i]` is `layers[i + 1].previousRegistry.ipfsHash`;
+   * the newest layer's is the tip CID the caller fetched.
+   */
   layers: Layer[];
   accumulated: AccumulatedState;
   /** ABI names the layers publish between them. */
   accumulatedAbis: Set<string>;
+  /** True only when the walk reached the base snapshot; false when it stopped, failed or was refused. */
   complete: boolean;
+  /**
+   * The `stopAt` CID the walk stopped before fetching, or null; `layers` and `accumulated` then
+   * cover only the layers above it.
+   */
+  stoppedAt: string | null;
+  /** Why the walk failed or was refused; null when it completed or stopped at `stopAt`. */
   reason: string | null;
-  /** The chain is not merely incomplete but invalid: no "proceed anyway" override may apply. */
+  /**
+   * The chain is not merely incomplete but invalid: no "proceed anyway" override may apply. Set for
+   * a rejected tip, a network refusal, and a `LayerVerificationError` from `fetchLayer`. A fatal
+   * result carries no layers and an empty accumulated state.
+   */
   fatal: boolean;
 }
 
@@ -55,6 +87,9 @@ export interface CollectedChain {
  *
  * Deliberately narrow: `chains` is the only field every layer shape (delta, patch, full) must
  * carry, and it is the field the accumulated state is built from.
+ *
+ * @param document - A parsed JSON value
+ * @returns Whether it is an object with a `chains` object
  */
 export function isRegistryDocument(document: unknown): document is Layer {
   if (document == null || typeof document !== "object" || Array.isArray(document)) return false;
@@ -66,19 +101,28 @@ export function isRegistryDocument(document: unknown): document is Layer {
  * Walks the registry linked list backwards from a tip document, collecting every layer.
  *
  * The walk terminates cleanly at the base snapshot (a layer with no `previousRegistry`).
- * Any other stop — a broken pointer, an unfetchable layer, a cycle, or the depth guard — leaves
- * the chain incomplete, which callers must treat as "cannot compute a trustworthy delta".
+ * Any other end — a broken pointer, an unfetchable layer, a cycle, the depth guard or a network
+ * refusal — leaves the chain incomplete with a `reason`, which callers must treat as "cannot
+ * compute a trustworthy delta".
+ *
+ * With `options.stopAt` the walk ends before fetching a listed CID; see `stoppedAt`.
+ *
+ * @param tipRegistry - The newest layer, already fetched; parse it with `layerFromBytes` like every
+ *   other layer, since the walk never sees its CID
+ * @param options - How to fetch layers, and the optional depth bound, network and stop set
+ * @returns The layers oldest → newest with their accumulated state; refusals set `fatal`
  */
 export async function collectRegistryChain(
   tipRegistry: Layer,
   options: CollectOptions,
 ): Promise<CollectedChain> {
-  const { fetchLayer, maxDepth = DEFAULT_MAX_DEPTH, expectedNetwork = null } = options;
+  const { fetchLayer, maxDepth = DEFAULT_MAX_DEPTH, expectedNetwork = null, stopAt } = options;
 
   const layers: Layer[] = [tipRegistry];
   const seen = new Set<string>();
   let current = tipRegistry;
   let complete = false;
+  let stoppedAt: string | null = null;
 
   // The tip is checked before walking: it comes from the caller, so it is both the layer no
   // gateway shape check has seen and the one most likely to be from the wrong network. There is
@@ -102,6 +146,12 @@ export async function collectRegistryChain(
         `"${current.previousRegistry.version ?? "unknown"}" but carries no previousRegistry.ipfsHash`;
       break;
     }
+    // Before the cycle and depth guards: a stop adds no layer, so it ends the walk cleanly even
+    // at maxDepth.
+    if (stopAt?.has(previousCid)) {
+      stoppedAt = previousCid;
+      break;
+    }
     if (seen.has(previousCid)) {
       reason = `cycle detected — ${previousCid} appears twice in the chain`;
       break;
@@ -117,6 +167,8 @@ export async function collectRegistryChain(
       previous = await fetchLayer(previousCid);
     } catch (error) {
       reason = (error as Error).message;
+      // A layer that fails verification is invalid, not an outage: no override applies.
+      fatal = error instanceof LayerVerificationError;
       break;
     }
 
@@ -141,6 +193,7 @@ export async function collectRegistryChain(
       accumulated: {},
       accumulatedAbis: new Set(),
       complete: false,
+      stoppedAt: null,
       reason,
       fatal,
     };
@@ -152,6 +205,7 @@ export async function collectRegistryChain(
     accumulated: flattenRegistryChain(layers),
     accumulatedAbis: flattenRegistryAbis(layers),
     complete,
+    stoppedAt,
     reason,
     fatal,
   };
@@ -171,25 +225,74 @@ function tipRejectionReason(tip: Layer, expectedNetwork: string | null): string 
 
 /**
  * Reports why a layer does not belong to the network being generated, or null if it is fine.
+ * With no expected network nothing is checked.
  *
- * Nothing in the chain format ties a layer to a network, so a mistyped source CID pointing at the
- * other environment's chain would otherwise flatten that environment's contracts into this delta
- * and pass every downstream check — the delta invariants included, since they compare against
- * this same accumulated state.
- *
- * A layer with no `network` field is treated as unknown rather than wrong: every layer published
- * so far carries one, but refusing to walk an older base snapshot that predates the field would
- * turn a missing label into a hard generation failure.
+ * A layer must declare the expected network as a string. One that names another network, or none
+ * at all, is refused: a mistyped source CID pointing at the other environment's chain would
+ * otherwise flatten that environment's contracts into this delta and pass every downstream check,
+ * and a layer with no label cannot be told apart from one of those. Every layer of both
+ * chains up to the fixture heads carries the field (test/fixtures/layers/).
  */
 function networkMismatchReason(layer: Layer, expectedNetwork: string | null): string | null {
   if (!expectedNetwork) return null;
   const declared = layer?.network;
-  if (typeof declared !== "string") return null;
   if (declared === expectedNetwork) return null;
+  const declaration =
+    typeof declared === "string" ? `declares network "${declared}"` : "declares no network";
   return (
-    `layer ${describeLayer(layer)} declares network "${declared}", ` +
+    `layer ${describeLayer(layer)} ${declaration}, ` +
     `but "${expectedNetwork}" is being generated — refusing to mix environments`
   );
+}
+
+export interface IsAncestorOptions {
+  /** Maximum number of layers the walk may hold, head included; see CollectOptions. */
+  maxDepth?: number;
+  /** When set, every layer walked must declare this network; see CollectOptions. */
+  expectedNetwork?: string | null;
+}
+
+/**
+ * Reports whether `ancestorCid` is `headCid` or a layer the chain below it points to.
+ *
+ * Answers true as soon as the walk would reach the ancestor, without fetching or verifying the
+ * ancestor or anything under it, and false only when the walk reaches the base snapshot without
+ * meeting it. When the walk cannot finish it throws: an unfetchable layer must not read as "not an
+ * ancestor". See `FetchLayer` for what the walk trusts.
+ *
+ * @param headCid - The CID of the newest layer; fetched through `fetchLayer` unless it equals the ancestor
+ * @param ancestorCid - The CID to look for, in canonical form: it is compared as a string with each
+ *   `previousRegistry.ipfsHash`, so another spelling of the same CID is never found
+ * @param fetchLayer - Fetches one layer by CID
+ * @param options - The depth bound and expected network of the walk
+ * @returns Whether the ancestor is the head or lies below it in the chain
+ * @throws A plain `Error` with the message `cannot walk from <head>: <reason>` when the head cannot
+ *   be fetched or is not a registry document, a layer in the chain cannot be fetched or has no
+ *   usable pointer, the chain cycles or exceeds `maxDepth`, or a layer fails the network check
+ */
+export async function isAncestor(
+  headCid: string,
+  ancestorCid: string,
+  fetchLayer: FetchLayer,
+  options: IsAncestorOptions = {},
+): Promise<boolean> {
+  if (headCid === ancestorCid) return true;
+
+  let head: Layer;
+  try {
+    head = await fetchLayer(headCid);
+  } catch (error) {
+    throw new Error(`cannot walk from ${headCid}: ${(error as Error).message}`, { cause: error });
+  }
+
+  const walk = await collectRegistryChain(head, {
+    ...options,
+    fetchLayer,
+    stopAt: new Set([ancestorCid]),
+  });
+  if (walk.stoppedAt !== null) return true;
+  if (walk.complete) return false;
+  throw new Error(`cannot walk from ${headCid}: ${walk.reason}`);
 }
 
 /**
@@ -201,6 +304,7 @@ function networkMismatchReason(layer: Layer, expectedNetwork: string | null): st
  * the same way, per address.
  *
  * @param layers - Registry documents ordered oldest → newest
+ * @returns Chain id → that chain's merged contracts, adapters, network and retired map
  */
 export function flattenRegistryChain(layers: Layer[]): AccumulatedState {
   const accumulated: AccumulatedState = {};
@@ -235,6 +339,9 @@ export function flattenRegistryChain(layers: Layer[]): AccumulatedState {
  * layer last carried it, so a name published once stays available. This is what makes it possible
  * to tell a contract whose ABI the chain already has from one whose ABI was never shipped — see
  * the ABI-gap healing in ./delta.ts.
+ *
+ * @param layers - Registry documents, in any order
+ * @returns Every ABI name any layer carries
  */
 export function flattenRegistryAbis(layers: Layer[]): Set<string> {
   const names = new Set<string>();
@@ -257,7 +364,23 @@ export function summarizeAccumulatedState(accumulated: AccumulatedState): {
   return { chains, contracts };
 }
 
-/** Human-readable label for a registry layer, used in diagnostics. */
+/**
+ * The same layer without its ABI bodies: a chain walk needs which ABIs a layer carries, not them.
+ *
+ * @param layer - A registry layer; not modified
+ * @returns A layer whose every ABI is an empty array, or the layer itself when it carries none
+ */
+export function slimLayer(layer: Layer): Layer {
+  if (!layer.abis) return layer;
+  return { ...layer, abis: Object.fromEntries(Object.keys(layer.abis).map((name) => [name, []])) };
+}
+
+/**
+ * Human-readable label for a registry layer, used in diagnostics.
+ *
+ * @param registry - A registry layer
+ * @returns Its quoted version or deploy commit, or "(unversioned patch)"
+ */
 export function describeLayer(registry: Layer): string {
   const version = registry?.version || registry?.deploymentInfo?.gitCommit;
   return version ? `"${version}"` : "(unversioned patch)";

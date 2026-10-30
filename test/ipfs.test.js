@@ -1,11 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  IPFS_GATEWAYS,
-  fetchRegistryFromIpfs,
-  isValidIpfsHash,
-  slimLayer,
-} from "../src/io/ipfs.ts";
+import { IPFS_GATEWAYS, fetchRegistryFromIpfs, isValidIpfsHash } from "../src/io/ipfs.ts";
 import { chain, fakeFetch, layer, memoryCache } from "./helpers.js";
 
 test("gateway list has no retired gateways and leads with Centrifuge's own", () => {
@@ -126,11 +121,4 @@ test("fetchRegistryFromIpfs keeps integers above 2^53 exact", async () => {
   const result = await fetchRegistryFromIpfs("cid1", { fetchImpl });
 
   assert.equal(JSON.stringify(result), text);
-});
-
-test("slimLayer keeps which ABIs a layer carries and drops their bodies", () => {
-  const full = { chains: {}, abis: { Hub: [{ type: "function", name: "x" }], Spoke: [] } };
-
-  assert.deepEqual(slimLayer(full).abis, { Hub: [], Spoke: [] });
-  assert.equal(full.abis.Hub.length, 1, "the input is not modified");
 });
