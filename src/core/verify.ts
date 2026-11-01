@@ -3,8 +3,7 @@
  *
  * Gateways are not trusted: every pointer in the chain is a CID, so bytes served under one are
  * checked against it. A raw CID's digest covers the bytes; a dag-pb CID's digest covers only the
- * root block of the file's DAG, so the DAG is rebuilt from the bytes and its root compared. The
- * rebuild is pure computation: no block is stored and nothing is fetched.
+ * root block of the file's DAG, so the DAG is rebuilt from the bytes and its root compared.
  */
 
 import { importer } from "ipfs-unixfs-importer";
@@ -15,7 +14,7 @@ import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 
 import { isRegistryDocument } from "./chain.ts";
-import { parseJson } from "./json.ts";
+import { assertJsonSourceText, parseJson } from "./json.ts";
 import { LayerVerificationError } from "./layer-verification-error.ts";
 import type { Layer } from "./types.ts";
 
@@ -91,24 +90,16 @@ export async function verifyLayer(cid: string, bytes: Uint8Array): Promise<void>
   );
 }
 
-/** Whether JSON.parse gives revivers the source text and JSON.rawJSON exists (what parseJson uses). */
-function hasJsonSourceText(): boolean {
-  let hasSource = false;
-  JSON.parse("1", (_key, value, context?: { source?: string }) => {
-    hasSource = context?.source === "1";
-    return value;
-  });
-  return hasSource && typeof JSON.rawJSON === "function";
-}
-
 /**
  * Verifies `bytes` against `cid` with `verifyLayer`, then parses them as a registry layer. Call it
  * inside a `fetchLayer` on the raw response bytes; see `FetchLayer`.
  *
- * Integers above 2^53 (a Chainlink `chainSelector`) come back as `JSON.rawJSON` values:
- * `JSON.stringify` writes their exact digits and `.rawJSON` holds them as a string, but they cannot
- * be coerced to a string or number and `structuredClone` refuses them. Needs ES2025 JSON.parse
- * source text access: without it `layerFromBytes` throws, for any layer.
+ * A pinned head vouches for the chain under it only when every layer's bytes, as served, were
+ * checked with `verifyLayer` before any parse. This is the variant that also keeps integers above
+ * 2^53 (a Chainlink `chainSelector`) exact: they come back as `JSON.rawJSON` values, which
+ * `JSON.stringify` writes digit for digit but which cannot be coerced to a string or number and
+ * which `structuredClone` refuses. A consumer that needs plain data verifies and parses itself.
+ * Needs ES2025 JSON.parse source text access.
  *
  * @param cid - The layer's CID string
  * @param bytes - The layer exactly as a gateway served it
@@ -120,11 +111,8 @@ function hasJsonSourceText(): boolean {
  *   importer yields nothing: faults of the runtime or library, not verdicts on the bytes
  */
 export async function layerFromBytes(cid: string, bytes: Uint8Array): Promise<Layer> {
-  // Without source text access parseJson rounds integers above 2^53 and the layer still looks
-  // verified.
-  if (!hasJsonSourceText()) {
-    throw new Error("layerFromBytes needs JSON.parse source text access (ES2025)");
-  }
+  // Outside the try below, which turns every failure into a verdict on the bytes.
+  assertJsonSourceText();
   await verifyLayer(cid, bytes);
 
   let document: unknown;

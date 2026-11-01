@@ -68,6 +68,7 @@ function compileConsumer(consumerDir: string): void {
   for (const { module, moduleResolution } of TYPE_CHECKS) {
     console.log(`compiling a consumer with module ${module}, moduleResolution ${moduleResolution}`);
     // Only the es2023 lib, no DOM and no @types/node: the declarations need nothing more.
+    // TypeScript 6 deprecates node10 resolution, and a consumer on it still has to compile.
     run(
       process.execPath,
       [tsc, "--noEmit", "--strict", "--skipLibCheck", "false", "--target", "es2023"]

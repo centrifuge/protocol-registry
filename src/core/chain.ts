@@ -16,7 +16,7 @@
  *
  * `isAncestor` answers whether one layer lies below another in that list.
  *
- * Network I/O reaches this module only as `fetchLayer` (in this repository, ../io/ipfs.ts).
+ * Network I/O reaches this module only as `fetchLayer`.
  */
 
 import { LayerVerificationError } from "./layer-verification-error.ts";
@@ -31,8 +31,9 @@ export const DEFAULT_MAX_DEPTH = 500;
 /**
  * Fetches the layer a CID addresses. A rejection ends the walk, its message becoming the `reason`.
  *
- * The walk trusts what this returns. For a pinned head to vouch for the whole chain, fetch the
- * layer's bytes and return `layerFromBytes(cid, bytes)`, which proves them against the CID.
+ * The walk trusts what this returns. A pinned head vouches for the chain only when the bytes of
+ * every layer, as served, were checked with `verifyLayer` before any parse; `layerFromBytes` does
+ * that and parses, keeping integers above 2^53 exact.
  */
 export type FetchLayer = (cid: string) => Promise<Layer>;
 
@@ -107,8 +108,8 @@ export function isRegistryDocument(document: unknown): document is Layer {
  *
  * With `options.stopAt` the walk ends before fetching a listed CID; see `stoppedAt`.
  *
- * @param tipRegistry - The newest layer, already fetched; parse it with `layerFromBytes` like every
- *   other layer, since the walk never sees its CID
+ * @param tipRegistry - The newest layer, already fetched; verify its bytes like every other layer's,
+ *   since the walk never sees its CID
  * @param options - How to fetch layers, and the optional depth bound, network and stop set
  * @returns The layers oldest → newest with their accumulated state; refusals set `fatal`
  */
@@ -168,7 +169,7 @@ export async function collectRegistryChain(
     } catch (error) {
       reason = (error as Error).message;
       // A layer that fails verification is invalid, not an outage: no override applies.
-      fatal = error instanceof LayerVerificationError;
+      fatal = isVerificationError(error);
       break;
     }
 
@@ -211,6 +212,15 @@ export async function collectRegistryChain(
   };
 }
 
+// By name as well as by class: a consumer can hold two copies of this package (one vendored, one
+// installed), and an instance check across them would let a verification failure read as an outage.
+function isVerificationError(error: unknown): boolean {
+  return (
+    error instanceof LayerVerificationError ||
+    (error instanceof Error && error.name === "LayerVerificationError")
+  );
+}
+
 /**
  * Reports why the tip cannot be walked, or null if it is usable.
  *
@@ -230,8 +240,7 @@ function tipRejectionReason(tip: Layer, expectedNetwork: string | null): string 
  * A layer must declare the expected network as a string. One that names another network, or none
  * at all, is refused: a mistyped source CID pointing at the other environment's chain would
  * otherwise flatten that environment's contracts into this delta and pass every downstream check,
- * and a layer with no label cannot be told apart from one of those. Every layer of both
- * chains up to the fixture heads carries the field (test/fixtures/layers/).
+ * and a layer with no label cannot be told apart from one of those.
  */
 function networkMismatchReason(layer: Layer, expectedNetwork: string | null): string | null {
   if (!expectedNetwork) return null;
@@ -268,7 +277,8 @@ export interface IsAncestorOptions {
  * @returns Whether the ancestor is the head or lies below it in the chain
  * @throws A plain `Error` with the message `cannot walk from <head>: <reason>` when the head cannot
  *   be fetched or is not a registry document, a layer in the chain cannot be fetched or has no
- *   usable pointer, the chain cycles or exceeds `maxDepth`, or a layer fails the network check
+ *   usable pointer, the chain cycles or exceeds `maxDepth`, or a layer fails the network check;
+ *   its `cause` is the error `fetchLayer` threw, such as a `LayerVerificationError`
  */
 export async function isAncestor(
   headCid: string,
@@ -285,14 +295,23 @@ export async function isAncestor(
     throw new Error(`cannot walk from ${headCid}: ${(error as Error).message}`, { cause: error });
   }
 
+  // The walk reports a failed fetch as a message; the error itself is kept to travel as the cause.
+  let fetchError: unknown;
   const walk = await collectRegistryChain(head, {
     ...options,
-    fetchLayer,
+    fetchLayer: async (cid) => {
+      try {
+        return await fetchLayer(cid);
+      } catch (error) {
+        fetchError = error;
+        throw error;
+      }
+    },
     stopAt: new Set([ancestorCid]),
   });
   if (walk.stoppedAt !== null) return true;
   if (walk.complete) return false;
-  throw new Error(`cannot walk from ${headCid}: ${walk.reason}`);
+  throw new Error(`cannot walk from ${headCid}: ${walk.reason}`, { cause: fetchError });
 }
 
 /**

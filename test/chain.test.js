@@ -9,6 +9,7 @@ import {
   slimLayer,
   summarizeAccumulatedState,
 } from "../src/core/chain.ts";
+import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
 import { layerFromBytes } from "../src/core/verify.ts";
 import { fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
 import {
@@ -759,4 +760,61 @@ test("slimLayer keeps which ABIs a layer carries and drops their bodies", () => 
 
   assert.deepEqual(slimLayer(full).abis, { Hub: [], Spoke: [] });
   assert.equal(full.abis.Hub.length, 1, "the input is not modified");
+});
+
+class ForeignLayerVerificationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LayerVerificationError";
+  }
+}
+
+test("collectRegistryChain is fatal for a verification error from another copy of the package", async () => {
+  const tip = layer({ version: "v2", chains: {}, previousCid: "cidForeign" });
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer: async () => {
+      throw new ForeignLayerVerificationError("layer cidForeign failed verification: tampered");
+    },
+  });
+
+  assert.equal(result.fatal, true);
+  assert.deepEqual(result.layers, []);
+});
+
+test("collectRegistryChain keeps a plain error named like another class non-fatal", async () => {
+  const tip = layer({ version: "v2", chains: {}, previousCid: "cidOutage" });
+
+  const result = await collectRegistryChain(tip, {
+    fetchLayer: async () => {
+      throw Object.assign(new Error("gateway down"), { name: "TypeError" });
+    },
+  });
+
+  assert.equal(result.fatal, false);
+});
+
+test("isAncestor keeps the verification error from a layer below the head as the cause", async () => {
+  const tampered = realChain(MAINNET_HEAD)[1].cid;
+
+  const error = await isAncestor(MAINNET_HEAD, OLD_MAINNET_HEAD, verifyingFetcher(tampered)).catch(
+    (caught) => caught,
+  );
+
+  assert.ok(error instanceof Error && !(error instanceof LayerVerificationError));
+  assert.ok(error.cause instanceof LayerVerificationError, String(error.cause));
+  assert.equal(error.cause.cid, tampered);
+});
+
+test("isAncestor keeps the fetch failure from a layer below the head as the cause", async () => {
+  const tip = layer({ version: "v2", chains: {}, previousCid: "cidMissing" });
+  const outage = new Error("gateway down");
+  const fetchLayer = async (cid) => {
+    if (cid === "cidHead") return tip;
+    throw outage;
+  };
+
+  const error = await isAncestor("cidHead", "cidOther", fetchLayer).catch((caught) => caught);
+
+  assert.equal(error.cause, outage);
 });

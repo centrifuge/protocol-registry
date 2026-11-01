@@ -2,10 +2,8 @@
  * Comparing the address histories of two registry chains.
  *
  * A history (see `chainAddressHistory` in ./retirements.ts) records every address a chain ever
- * published, which is what an address book is built from. Two chains of one network, say the one
- * a binary was built against and the one now live, give two histories; the diff says which
- * addresses a consumer holding the first would be missing, no longer needs, or holds under other
- * names.
+ * published, which is what an address book is built from. The diff says which addresses a consumer
+ * holding the first history would be missing, no longer need, or hold under other names.
  */
 
 import type { AddressHistory, AddressRecord } from "./retirements.ts";

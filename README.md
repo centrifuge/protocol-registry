@@ -106,7 +106,9 @@ there is nothing to measure against, and the result would present an outage as a
 layer must declare the network being generated; a layer of the other network, or one declaring
 none, fails the run.
 
-Fetched layers are cached in R2 by CID (`layers/<cid>.json`), since a CID's contents never change.
+Fetched layers are cached in R2 by CID (`layers/<cid>.json`), so a layer is fetched from IPFS once.
+The Worker's own layer fetches (`fetchRegistryFromIpfs` and that cache) do not check the bytes against
+their CIDs; checking is what consumers do with the package (see [Package](#package)).
 
 ### Modes
 
@@ -242,8 +244,8 @@ the old ABI cache did and the workflow does.
 `@centrifuge/registry-core` is `src/core/index.ts` and the files it imports, built into
 `packages/registry-core/dist/` (JavaScript and declarations, ES modules; on Node 22.12 or later a
 CommonJS file loads it with `require`) and published to GitHub Packages. The Worker does not use the build:
-it imports `src/core/` by relative path. `src/core/index.ts` documents every export (shipped as
-`dist/index.d.ts`); by group:
+it imports `src/core/` by relative path. The exports, by group (their documentation ships as
+`dist/index.d.ts`):
 
 - **Chain walking:** `collectRegistryChain`, `isAncestor`, `flattenRegistryChain`,
   `flattenRegistryAbis`, `isRegistryDocument`, `describeLayer`, `slimLayer`, `DEFAULT_MAX_DEPTH`
@@ -265,8 +267,10 @@ the right head, which is the caller's pin, nor anything about the layers below i
 `layerFromBytes(cid, bytes)` verifies and then parses the bytes as a layer.
 
 A walk is only as trustworthy as what feeds it. A pinned head vouches for the chain under it only
-when the head is `layerFromBytes(pinnedCid, bytes)` and `fetchLayer` returns
-`layerFromBytes(cid, bytes)` on every layer's bytes as served, before any parsing.
+when the bytes of the head and of every layer `fetchLayer` returns, as served, were checked with
+`verifyLayer` before any parsing. `layerFromBytes` does both steps and also keeps integers above 2^53
+exact; its `JSON.rawJSON` values do not survive `structuredClone`, so a consumer that needs plain data
+runs `verifyLayer` on the bytes and parses them itself.
 
 - `stopAt` (an option of `collectRegistryChain`) ends the walk before fetching a listed CID.
 - `isAncestor(head, ancestor, fetchLayer)` is true when the ancestor is the head or a layer below it,
@@ -284,7 +288,7 @@ the package's floor, has; on a runtime without it `layerFromBytes` throws.
 ### Install
 
 Depend on an exact version, never a range or the `snapshot` tag: `snapshot` names the newest publish
-from any ref, including a dispatched feature branch, and the commit suffix does not sort by time.
+from `main`, and the commit suffix does not sort by time.
 `<sha7>` below is the first 7 characters of a commit whose publish run succeeded;
 `npm view @centrifuge/registry-core versions --registry https://npm.pkg.github.com` lists what
 exists.
@@ -306,21 +310,22 @@ Then resolve the scope and add the dependency in one of two ways:
   `pnpm add --save-exact ...`).
 - Where other `@centrifuge/*` packages come from npmjs, put
   `"@centrifuge/registry-core": "gh:0.1.0-sha.<sha7>"` in `package.json` and run `pnpm install`.
-  `gh:` is pnpm's built-in alias for GitHub Packages (pnpm 11.1 or later) and routes only this
-  package.
+  `gh:` is a pnpm alias for GitHub Packages that routes only this package; it needs a recent pnpm, so
+  check that yours accepts it.
 
-pnpm 11's `minimumReleaseAge` (1440 minutes by default) refuses a version published more recently, so
-a fresh snapshot needs `@centrifuge/registry-core` in `minimumReleaseAgeExclude`.
+pnpm's [`minimumReleaseAge`](https://pnpm.io/settings#minimumreleaseage) refuses a version published
+more recently than the configured age. Where it is set, a fresh snapshot needs
+`@centrifuge/registry-core` in `minimumReleaseAgeExclude`.
 
 TypeScript finds the types through `types` under `moduleResolution` `node` (`node10`), and through
 `exports` under `nodenext` and `bundler`. A CommonJS file uses `module: commonjs` with
 `moduleResolution: node`, or `nodenext` on TypeScript 5.8 or later; `node16` does not work for a
 CommonJS file.
 
-Installing adds about 60 packages, almost all of them dependencies of `ipfs-unixfs-importer`, which
-`verifyLayer` and `layerFromBytes` use. A bundler drops them for a consumer that calls neither:
-`collectRegistryChain`, `isAncestor` and `flattenRegistryChain` bundle to about 2 kB minified
-(esbuild 0.28.1), and adding `verifyLayer` or `layerFromBytes` makes it about 88 kB.
+Installing adds the dependencies of `ipfs-unixfs-importer`, which `verifyLayer` and `layerFromBytes`
+use. A bundler drops them for a consumer that calls neither. Measured at 0.1.0 with esbuild 0.28.1:
+about 60 packages installed; `collectRegistryChain`, `isAncestor` and `flattenRegistryChain` bundle
+to about 2 kB minified, and adding `verifyLayer` or `layerFromBytes` makes it about 88 kB.
 
 ### Versions
 
@@ -329,7 +334,7 @@ Every publish is `<version>-sha.<first 7 characters of the commit>` (`0.1.0-sha.
 `snapshot`. The workflow `publish-registry-core.yml` publishes on a push to `main` that touches
 `src/core/`, `packages/registry-core/`, `scripts/build-package.ts`, `scripts/check-package*`,
 `scripts/core-imports.ts`, `LICENSE`, the root `package.json`, `pnpm-lock.yaml` or the workflow itself, and on
-manual dispatch. It typechecks, tests and runs the smoke check first, and skips a version that
+manual dispatch, which publishes only from `main` and exists to re-run a failed publish. It typechecks, tests and runs the smoke check first, and skips a version that
 already exists. A commit whose 7 characters are all digits starting with a zero publishes nothing:
 npm would rename that version, so the workflow fails instead.
 
@@ -345,6 +350,10 @@ What exists outside this repository, and where it is managed:
 | Worker secrets                                                                                                          | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
 | The GitHub App                                                                                                          | GitHub organization settings                                                                 |
 | Which repositories' Actions may read `@centrifuge/registry-core`                                                        | the package's settings on GitHub, Manage Actions access                                      |
+
+**Package access.** `@centrifuge/registry-core` exists only after the first publish from `main`. A
+package admin then grants Actions access to `centrifuge/event-lake` and `centrifuge/backend` in the
+package's settings (Manage Actions access), and a consumer workflow needs `packages: read`.
 
 The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App

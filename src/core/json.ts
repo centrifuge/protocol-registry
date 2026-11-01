@@ -14,7 +14,28 @@ declare global {
   }
 }
 
+/** Whether JSON.parse gives revivers the source text and JSON.rawJSON exists (what parseJson uses). */
+function hasJsonSourceText(): boolean {
+  let hasSource = false;
+  JSON.parse("1", (_key, value, context?: { source?: string }) => {
+    hasSource = context?.source === "1";
+    return value;
+  });
+  return hasSource && typeof JSON.rawJSON === "function";
+}
+
+/**
+ * Throws a plain `Error` on a runtime without JSON.parse source text access, where `parseJson`
+ * would round integers above 2^53 without a sign of it.
+ */
+export function assertJsonSourceText(): void {
+  if (!hasJsonSourceText()) {
+    throw new Error("parseJson needs JSON.parse source text access (ES2025)");
+  }
+}
+
 export function parseJson<T = unknown>(text: string): T {
+  assertJsonSourceText();
   return JSON.parse(text, (_key, value, context?: { source?: string }) =>
     typeof value === "number" &&
     !Number.isSafeInteger(value) &&

@@ -15,7 +15,7 @@ on:
       - ".github/workflows/publish-registry-core.yml"
   workflow_dispatch:
 
-# A snapshot already being published finishes before the next one starts.
+# A publish is never cancelled: a cancelled one can leave a half-written version behind.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -26,6 +26,8 @@ permissions:
 jobs:
   publish:
     name: Publish snapshot to npm.pkg.github.com
+    # Dispatch exists to re-run a failed publish of main; no other ref publishes under the official name.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

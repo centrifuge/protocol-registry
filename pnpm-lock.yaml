@@ -7,13 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      ipfs-unixfs-importer:
-        specifier: 17.1.1
-        version: 17.1.1
-      multiformats:
-        specifier: 14.0.5
-        version: 14.0.5
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^5.20261007.1
@@ -30,6 +23,12 @@ importers:
       globals:
         specifier: ^17.13.0
         version: 17.13.0
+      ipfs-unixfs-importer:
+        specifier: 17.1.1
+        version: 17.1.1
+      multiformats:
+        specifier: 14.0.5
+        version: 14.0.5
       prettier:
         specifier: 3.9.9
         version: 3.9.9
