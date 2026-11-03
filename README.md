@@ -311,12 +311,17 @@ to about 2 kB minified, and adding `verifyLayer` or `layerFromBytes` makes it ab
 
 ### Versions
 
+The version is the `version` in `packages/registry-core/package.json`, raised in the pull request
+that changes the package. While it is 0.x, a breaking change to an export raises the minor version
+and any other change the patch version. Consumers pin an exact version. A version is published only
+by a GitHub release; a push to `main` publishes nothing.
+
 The workflow `publish-registry-core.yml` publishes when a GitHub release is published. It runs in
 the `release` environment, refuses a release whose commit is not on `main` or whose tag is not
-`registry-core-v<version>` for the `version` in `packages/registry-core/package.json`, typechecks,
-tests and runs the smoke check, then runs `npm publish --provenance` and checks that the published
-version carries the attestation. npmjs accepts the publish only from this workflow in that
-environment (trusted publishing), so the repository holds no npm token.
+`registry-core-v<version>`, typechecks, tests and runs the smoke check, then runs
+`npm publish --provenance` and checks that the published version carries the attestation. npmjs
+accepts the publish only from this workflow in that environment (trusted publishing), so the
+repository holds no npm token.
 
 ## Setup
 
