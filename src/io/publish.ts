@@ -14,19 +14,23 @@ export interface PinResult {
  * Pins a layer as a public file, named and tagged as the scripts this replaces did
  * (`registry-<network>-<version>`, keyvalues env / sha / version), so earlier pins and new ones read
  * the same in the Pinata dashboard.
+ *
+ * The CID profile is set explicitly to `v1` (`ipfs add --cid-version 1`), the one `verifyLayer`
+ * rebuilds, so a changed Pinata default cannot rename layers under a CID consumers reject.
  */
 export async function pinLayer(
   jwt: string,
   network: Network,
-  text: string,
+  bytes: Uint8Array,
   meta: { version: string | null; gitCommit: string | null; sha: string },
   fetchImpl: FetchLike = fetch,
 ): Promise<PinResult> {
   const label = meta.version || meta.gitCommit || "unknown";
   const name = `registry-${network}-${label}`;
   const form = new FormData();
-  form.append("file", new File([text], `${name}.json`, { type: "application/json" }));
+  form.append("file", new File([bytes], `${name}.json`, { type: "application/json" }));
   form.append("network", "public");
+  form.append("cid_version", "v1");
   form.append("name", name);
   form.append(
     "keyvalues",

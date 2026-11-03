@@ -447,6 +447,8 @@ Where the Worker differs from the scripts it replaces:
 - The tip is read by CID from the hostname's dnslink and fetched through IPFS, instead of over HTTP
   with the CID resolved separately, so the layer and its `previousRegistry.ipfsHash` always agree.
 - A publish refuses when the hostname moved while it ran.
+- A publish pins with an explicit CIDv1 profile and checks the CID Pinata returns against the
+  uploaded bytes with `verifyLayer`, as consumers do, before the hostname can point at it.
 - Explorer lookups of creation blocks are cached, since they never change.
 
 ## Development

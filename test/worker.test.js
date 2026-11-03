@@ -5,8 +5,15 @@ import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, compareSource, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
-import { pointHostname, publishMode, TipMovedError } from "../src/run.ts";
+import {
+  pinNetwork,
+  PinVerificationError,
+  pointHostname,
+  publishMode,
+  TipMovedError,
+} from "../src/run.ts";
 import { route, touchesRegistryInputs } from "../src/webhook.ts";
+import { realLayerBytes } from "./helpers.js";
 
 const config = { sourceRepo: "centrifuge/protocol-internal", sourceBranch: "live-v3.3" };
 const repository = { full_name: config.sourceRepo };
@@ -275,6 +282,49 @@ test("pointHostname is a no-op on a retry after the swap landed", async () => {
   const gateway = fakeGateway("new");
   await pointHostname({ gateway, hostnames }, { network: "mainnet", liveCid: "tip" }, "new");
   assert.deepEqual(gateway.state.sets, []);
+});
+
+/** Pinata's upload API, pinning every upload under `cid`; `uploads` holds what it was sent. */
+function fakePinata(cid) {
+  const uploads = [];
+  const fetchImpl = async (url, init) => {
+    assert.equal(url, "https://uploads.pinata.cloud/v3/files");
+    const bytes = new Uint8Array(await init.body.get("file").arrayBuffer());
+    uploads.push({ cidVersion: init.body.get("cid_version"), bytes });
+    return Response.json({ data: { cid } });
+  };
+  return { fetchImpl, uploads };
+}
+
+/** Pins the real testnet layer `cid`, as generated in run "run" on the tip the hostname serves. */
+function pinRealLayer(cid, pinata) {
+  const text = new TextDecoder().decode(realLayerBytes(cid));
+  const bucket = {
+    get: async (key) =>
+      key === "runs/run/registry-testnet.json" ? { text: async () => text } : null,
+  };
+  const config = { gateway: fakeGateway("tip"), hostnames, bucket, pinataJwt: "jwt" };
+  return pinNetwork(config, "run", { network: "testnet", liveCid: "tip" }, "sha", pinata.fetchImpl);
+}
+
+// A real layer of more than one 262144-byte chunk, which `ipfs add --cid-version 1` names dag-pb
+const DAG_PB_LAYER = "bafybeiayw6schdcst5q2dcphe5bxybtlk6mkuukbrxz4qmidxtpiutojei";
+
+test("pinNetwork pins with CIDv1 and returns the CID once it verifies against the bytes", async () => {
+  const pinata = fakePinata(DAG_PB_LAYER);
+
+  assert.equal(await pinRealLayer(DAG_PB_LAYER, pinata), DAG_PB_LAYER);
+  assert.equal(pinata.uploads.length, 1);
+  assert.equal(pinata.uploads[0].cidVersion, "v1");
+  assert.deepEqual(pinata.uploads[0].bytes, realLayerBytes(DAG_PB_LAYER));
+});
+
+test("pinNetwork refuses a pinned CID its bytes do not verify against", async () => {
+  // The dag-pb CID of another real layer
+  const pinata = fakePinata("bafybeic4gjeujbrdz66a7zeskgbnsthh325o62ufd3abmosd33g4xx7gs4");
+
+  await assert.rejects(() => pinRealLayer(DAG_PB_LAYER, pinata), PinVerificationError);
+  assert.equal(pinata.uploads.length, 1);
 });
 
 test("publishing stays in shadow unless PUBLISH_MODE says otherwise and the credentials are there", () => {

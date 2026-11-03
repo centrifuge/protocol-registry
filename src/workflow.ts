@@ -23,6 +23,7 @@ import {
   generateNetwork,
   loadEnv,
   pinNetwork,
+  PinVerificationError,
   pointHostname,
   publishMode,
   TipMovedError,
@@ -132,11 +133,15 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
             shadow.push(outcome.network);
             continue;
           }
+          // Pinning the same bytes again gives the same CID, so a pin that fails verification stops
+          // the run before anything points at it
           const cid = await step.do(`pin ${outcome.network}`, async () => {
             try {
               return await pinNetwork(config, runId, outcome, sha);
             } catch (error) {
-              throw error instanceof TipMovedError ? new NonRetryableError(error.message) : error;
+              throw error instanceof TipMovedError || error instanceof PinVerificationError
+                ? new NonRetryableError(error.message)
+                : error;
             }
           });
           if (mode === "pin") {

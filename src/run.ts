@@ -7,13 +7,15 @@
  * small: shas, counts, findings.
  */
 
-import { fetchRegistryFromIpfs, type LayerCache } from "./io/ipfs.ts";
+import { fetchRegistryFromIpfs, type FetchLike, type LayerCache } from "./io/ipfs.ts";
 import { collectRegistryChain, slimLayer } from "./core/chain.ts";
 import { registryPointer, type EnvTree } from "./core/env.ts";
 import { validateEnvTree } from "./core/env-schema.ts";
 import { generateRegistry, RefusedError, type Logger, type RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
 import { validateRegistry } from "./core/validate.ts";
+import { verifyLayer } from "./core/verify.ts";
+import { LayerVerificationError } from "./core/layer-verification-error.ts";
 import { publishedTags, versionTagErrors } from "./core/version-tags.ts";
 import { r2AbiStore } from "./io/abis.ts";
 import { explorerCreationBlocks } from "./io/explorers.ts";
@@ -278,12 +280,28 @@ async function assertTip(config: RunConfig, network: Network, expected: string |
   if (current !== expected) throw new TipMovedError(network, expected, current);
 }
 
-/** Pins a generated layer, after checking the tip it builds on is still the one served. */
+/** Thrown when Pinata pinned a layer under a CID its bytes do not verify against. */
+export class PinVerificationError extends Error {
+  constructor(network: Network, cause: LayerVerificationError) {
+    super(
+      `${network}: Pinata pinned the layer under a CID consumers would reject (${cause.message}). ` +
+        `Nothing points at it; the hostname was not changed.`,
+      { cause },
+    );
+    this.name = "PinVerificationError";
+  }
+}
+
+/**
+ * Pins a generated layer, after checking the tip it builds on is still the one served, and checks
+ * the CID Pinata returns against the bytes uploaded, as every consumer of the layer will.
+ */
 export async function pinNetwork(
   config: RunConfig,
   runId: string,
   outcome: GeneratedOutcome,
   sha: string,
+  fetchImpl: FetchLike = fetch,
 ): Promise<string> {
   await assertTip(config, outcome.network, outcome.liveCid);
   const stored = await config.bucket.get(runKey(runId, `registry-${outcome.network}.json`));
@@ -294,11 +312,21 @@ export async function pinNetwork(
     deploymentInfo?: { gitCommit?: string };
   };
   if (!config.pinataJwt) throw new Error("PINATA_JWT is not set");
-  const { cid } = await pinLayer(config.pinataJwt, outcome.network, text, {
-    version: layer.version ?? null,
-    gitCommit: layer.deploymentInfo?.gitCommit ?? null,
-    sha,
-  });
+  const bytes = new TextEncoder().encode(text);
+  const { cid } = await pinLayer(
+    config.pinataJwt,
+    outcome.network,
+    bytes,
+    { version: layer.version ?? null, gitCommit: layer.deploymentInfo?.gitCommit ?? null, sha },
+    fetchImpl,
+  );
+  try {
+    await verifyLayer(cid, bytes);
+  } catch (error) {
+    throw error instanceof LayerVerificationError
+      ? new PinVerificationError(outcome.network, error)
+      : error;
+  }
   return cid;
 }
 
