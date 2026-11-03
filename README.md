@@ -121,8 +121,7 @@ dropping is the point, `env/registry.json` switching a registry to another deplo
 
 **A contract missing from env is kept**, exactly as published. Env is written by deploy scripts that
 record what they deployed, and a release's `REPLACE` run drops every contract it did not redeploy, so a
-missing key says nothing about whether a contract is still in use. (Tombstoning on absence once retired
-the v3.1 on/off-ramp factory while 93 managers still used it.)
+missing key says nothing about whether a contract is still in use.
 
 Retirement is declared, per chain, in `env/<environment>/retired.json`, keyed by network name:
 
