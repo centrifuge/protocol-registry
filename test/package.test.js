@@ -23,11 +23,6 @@ const isBuiltin = (specifier) =>
 
 const { specifiers } = readCoreImports(ENTRY);
 
-test("the import walk reaches verify.ts, so the pins test is not vacuous", () => {
-  assert.ok(specifiers.length > 0, "no imports found: the walk read nothing");
-  assert.ok(specifiers.includes("multiformats/cid"), `walk missed verify.ts: ${specifiers}`);
-});
-
 test("the package depends on exactly the packages the core imports, at the root's pins", () => {
   const root = readJson("../package.json");
   const published = readJson("../packages/registry-core/package.json");

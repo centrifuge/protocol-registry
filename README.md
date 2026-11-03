@@ -469,10 +469,9 @@ to its assertions (`layer()`, `chain()` and `contract()` in `test/helpers.js`).
 Real layers live under `test/fixtures/layers/<cid>.json.gz`: every layer of the mainnet chain from
 head `bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi` down (14 layers) and of the
 testnet chain from head `bafkreifwkz42zr3vxqo3767ifis32nuhsfbm4h7ubd5aei45wthawxdumm` down (53
-layers), gzip of the bytes a gateway served. `realLayerBytes(cid)`, `realChain(head)` and `realLayerFetch()`
-in `test/helpers.js` read them; `realLayerFetch()` returns `{ fetchImpl, calls }`, and `fetchImpl`
-goes to `fetchRegistryFromIpfs`, so a test walks them through the parse path a gateway response
-takes. `verifyLayer` proves each file against its CID, so a fixture needs no other provenance.
+layers), gzip of the bytes a gateway served. `realLayerBytes(cid)` and `realChain(head)` in
+`test/helpers.js` read them. `verifyLayer` proves each file against its CID, so a fixture needs no
+other provenance.
 
 The fixtures are a frozen snapshot of both chains at those two heads (the constants in
 `test/helpers.js`), not a mirror of the live chains. The heads pin counts and stop points in

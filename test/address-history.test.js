@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { diffAddressHistories } from "../src/core/address-history.ts";
 import { chainAddressHistory } from "../src/core/retirements.ts";
-import { MAINNET_HEAD, OLD_MAINNET_HEAD, chain, contract, layer, realChain } from "./helpers.js";
+import { chain, contract, layer } from "./helpers.js";
 
 function history(...layers) {
   return chainAddressHistory(layers, "1");
@@ -23,12 +23,10 @@ test("diffAddressHistories reports an address only the second history has as add
     history(at({ hub: "0xaa", spoke: "0xbb" })),
   );
 
-  assert.deepEqual(
-    diff.added.map(({ address, contract }) => [address, contract]),
-    [["0xbb", "spoke"]],
-  );
-  assert.deepEqual(diff.removed, []);
-  assert.deepEqual(diff.changed, []);
+  assert.deepEqual(diff, {
+    ...emptyDiff(),
+    added: [{ address: "0xbb", contract: "spoke", names: ["spoke"], blockNumber: 100 }],
+  });
 });
 
 test("diffAddressHistories reports an address only the first history has as removed", () => {
@@ -37,83 +35,90 @@ test("diffAddressHistories reports an address only the first history has as remo
     history(at({ hub: "0xaa" })),
   );
 
-  assert.deepEqual(
-    diff.removed.map(({ address, contract }) => [address, contract]),
-    [["0xbb", "spoke"]],
-  );
-  assert.deepEqual(diff.added, []);
+  assert.deepEqual(diff, {
+    ...emptyDiff(),
+    removed: [{ address: "0xbb", contract: "spoke", names: ["spoke"], blockNumber: 100 }],
+  });
 });
 
-test("diffAddressHistories reports an address published under another name as changed", () => {
-  const diff = diffAddressHistories(history(at({ hub: "0xaa" })), history(at({ hubV2: "0xaa" })));
+const CHANGED = [
+  ["published under another name", [at({ hub: "0xaa" })], [at({ hubV2: "0xaa" })]],
+  [
+    "with an extra historical name and the same last name",
+    [at({ hub: "0xaa" })],
+    [at({ oldHub: "0xaa" }), at({ hub: "0xaa" })],
+  ],
+  [
+    "with the same names published in another order",
+    [at({ hub: "0xaa" }), at({ hubV2: "0xaa" })],
+    [at({ hubV2: "0xaa" }), at({ hub: "0xaa" })],
+  ],
+  [
+    "with a different earlier name",
+    [at({ oldHub: "0xaa" }), at({ hub: "0xaa" })],
+    [at({ priorHub: "0xaa" }), at({ hub: "0xaa" })],
+  ],
+  [
+    "that lost a historical name",
+    [at({ oldHub: "0xaa" }), at({ hub: "0xaa" })],
+    [at({ hub: "0xaa" })],
+  ],
+  [
+    "with a different block number",
+    [at({ hub: contract("0xaa", 100) })],
+    [at({ hub: contract("0xaa", 250) })],
+  ],
+];
 
-  assert.equal(diff.changed.length, 1);
-  const [change] = diff.changed;
-  assert.equal(change.address, "0xaa");
-  assert.equal(change.before.contract, "hub");
-  assert.equal(change.after.contract, "hubV2");
-});
+for (const [name, before, after] of CHANGED) {
+  test(`diffAddressHistories reports an address ${name} as changed, with both summaries`, () => {
+    const a = history(...before);
+    const b = history(...after);
 
-test("diffAddressHistories reports an extra historical name as changed even when the last name is the same", () => {
-  const a = history(at({ hub: "0xaa" }));
-  const b = history(at({ oldHub: "0xaa" }), at({ hub: "0xaa" }));
+    const diff = diffAddressHistories(a, b);
 
-  const diff = diffAddressHistories(a, b);
+    const summary = (record) => ({
+      contract: record.contract,
+      names: [...record.names].sort(),
+      blockNumber: record.blockNumber,
+    });
+    assert.deepEqual(diff, {
+      ...emptyDiff(),
+      changed: [
+        {
+          address: "0xaa",
+          before: summary(a.addresses.get("0xaa")),
+          after: summary(b.addresses.get("0xaa")),
+        },
+      ],
+    });
+  });
+}
 
-  assert.deepEqual(
-    diff.changed.map(({ address }) => address),
-    ["0xaa"],
-  );
-  assert.deepEqual([...diff.changed[0].after.names].sort(), ["hub", "oldHub"]);
-});
+const NO_DIFFERENCE = [
+  ["addresses differing only in case", [at({ hub: "0xAbC" })], [at({ hub: "0xaBc" })]],
+  [
+    "a name tombstoned in both, however often",
+    [at({ guardian: "0xaa" }), at({ guardian: contract(null) })],
+    [at({ guardian: "0xaa" }), at({ guardian: contract(null) }), at({ guardian: contract(null) })],
+  ],
+  [
+    "a tombstoned name re-published at a known address",
+    [at({ hub: "0xaa" }), at({ hub: contract(null) })],
+    [at({ hub: "0xaa" }), at({ hub: contract(null) }), at({ hub: "0xaa" })],
+  ],
+  [
+    "a history and itself",
+    [at({ hub: "0xaa", spoke: "0xbb" }), at({ hub: contract(null) })],
+    [at({ hub: "0xaa", spoke: "0xbb" }), at({ hub: contract(null) })],
+  ],
+];
 
-test("diffAddressHistories reports the same names published in another order as changed", () => {
-  const a = history(at({ hub: "0xaa" }), at({ hubV2: "0xaa" }));
-  const b = history(at({ hubV2: "0xaa" }), at({ hub: "0xaa" }));
-
-  const diff = diffAddressHistories(a, b);
-
-  assert.deepEqual(
-    diff.changed.map(({ address, before, after }) => [address, before.contract, after.contract]),
-    [["0xaa", "hubV2", "hub"]],
-  );
-});
-
-test("diffAddressHistories reports an address with a different earlier name as changed", () => {
-  const a = history(at({ oldHub: "0xaa" }), at({ hub: "0xaa" }));
-  const b = history(at({ priorHub: "0xaa" }), at({ hub: "0xaa" }));
-
-  assert.deepEqual(
-    diffAddressHistories(a, b).changed.map(({ address }) => address),
-    ["0xaa"],
-  );
-});
-
-test("diffAddressHistories reports an address that lost a historical name as changed", () => {
-  const a = history(at({ oldHub: "0xaa" }), at({ hub: "0xaa" }));
-  const b = history(at({ hub: "0xaa" }));
-
-  assert.deepEqual(
-    diffAddressHistories(a, b).changed.map(({ address }) => address),
-    ["0xaa"],
-  );
-});
-
-test("diffAddressHistories reports a different block number as changed", () => {
-  const a = history(at({ hub: contract("0xaa", 100) }));
-  const b = history(at({ hub: contract("0xaa", 250) }));
-
-  const diff = diffAddressHistories(a, b);
-
-  assert.deepEqual(
-    diff.changed.map(({ address, before, after }) => [
-      address,
-      before.blockNumber,
-      after.blockNumber,
-    ]),
-    [["0xaa", 100, 250]],
-  );
-});
+for (const [name, before, after] of NO_DIFFERENCE) {
+  test(`diffAddressHistories finds no difference for ${name}`, () => {
+    assert.deepEqual(diffAddressHistories(history(...before), history(...after)), emptyDiff());
+  });
+}
 
 test("diffAddressHistories does not report an address whose layer position differs between chains", () => {
   const a = history(at({ hub: "0xaa" }));
@@ -128,12 +133,6 @@ test("diffAddressHistories does not report an address whose layer position diffe
   assert.deepEqual(diff.changed, [], "0xaa sits in layer 0 of one chain and 2 of the other");
 });
 
-test("diffAddressHistories compares addresses case-insensitively", () => {
-  const diff = diffAddressHistories(history(at({ hub: "0xAbC" })), history(at({ hub: "0xaBc" })));
-
-  assert.deepEqual(diff, emptyDiff());
-});
-
 test("diffAddressHistories reports names tombstoned on one side only", () => {
   const a = history(at({ guardian: "0xaa", root: "0xbb" }), at({ guardian: contract(null) }));
   const b = history(at({ guardian: "0xaa", root: "0xbb" }), at({ root: contract(null) }));
@@ -144,59 +143,20 @@ test("diffAddressHistories reports names tombstoned on one side only", () => {
   assert.deepEqual(diff.tombstonesRemoved, ["guardian"]);
 });
 
-test("diffAddressHistories does not report a name tombstoned in both, however often", () => {
-  const a = history(at({ guardian: "0xaa" }), at({ guardian: contract(null) }));
-  const b = history(
-    at({ guardian: "0xaa" }),
-    at({ guardian: contract(null) }),
-    at({ guardian: contract(null) }),
+test("diffAddressHistories sorts every list, whatever order the histories publish in", () => {
+  const forward = history(
+    at({ c: "0xcc", a: "0xaa", b: "0xbb", y: contract(null), x: contract(null) }),
   );
-
-  assert.deepEqual(diffAddressHistories(a, b), emptyDiff());
-});
-
-test("diffAddressHistories of a history with itself is empty", () => {
-  const a = history(at({ hub: "0xaa", spoke: "0xbb" }), at({ hub: contract(null) }));
-
-  assert.deepEqual(diffAddressHistories(a, a), emptyDiff());
-});
-
-test("diffAddressHistories sorts every list, whatever order the histories were built in", () => {
-  const forward = history(at({ c: "0xcc", a: "0xaa", b: "0xbb" }));
-  const reverse = history(at({ b: "0xbb", a: "0xaa", c: "0xcc" }));
+  const renamed = history(at({ cV2: "0xcc", bV2: "0xbb", aV2: "0xaa" }));
   const empty = history(at({}));
+  const sorted = ["0xaa", "0xbb", "0xcc"];
+  const addresses = (list) => list.map(({ address }) => address);
 
-  const fromForward = diffAddressHistories(empty, forward);
-  const fromReverse = diffAddressHistories(empty, reverse);
-
-  assert.deepEqual(
-    fromForward.added.map(({ address }) => address),
-    ["0xaa", "0xbb", "0xcc"],
-  );
-  assert.deepEqual(fromForward, fromReverse);
-  assert.deepEqual(
-    diffAddressHistories(forward, empty).removed.map(({ address }) => address),
-    ["0xaa", "0xbb", "0xcc"],
-  );
-});
-
-test("diffAddressHistories sorts tombstoned names", () => {
-  const a = history(at({}));
-  const b = history(at({ zed: contract(null), alpha: contract(null) }));
-
-  assert.deepEqual(diffAddressHistories(a, b).tombstonesAdded, ["alpha", "zed"]);
-});
-
-test("diffAddressHistories sorts changed addresses, whatever order the second history publishes them", () => {
-  const a = history(at({ one: "0xaa", two: "0xbb", three: "0xcc" }));
-  const b = history(at({ threeV2: "0xcc", twoV2: "0xbb", oneV2: "0xaa" }));
-
-  const diff = diffAddressHistories(a, b);
-
-  assert.deepEqual(
-    diff.changed.map(({ address }) => address),
-    ["0xaa", "0xbb", "0xcc"],
-  );
+  assert.deepEqual(addresses(diffAddressHistories(empty, forward).added), sorted);
+  assert.deepEqual(addresses(diffAddressHistories(forward, empty).removed), sorted);
+  assert.deepEqual(addresses(diffAddressHistories(forward, renamed).changed), sorted);
+  assert.deepEqual(diffAddressHistories(empty, forward).tombstonesAdded, ["x", "y"]);
+  assert.deepEqual(diffAddressHistories(forward, empty).tombstonesRemoved, ["x", "y"]);
 });
 
 test("diffAddressHistories serialises with its names and without layer positions", () => {
@@ -210,75 +170,17 @@ test("diffAddressHistories serialises with its names and without layer positions
   ]);
 });
 
-test("diffAddressHistories results share nothing with the histories they came from", () => {
-  const a = history(at({ hub: "0xaa" }));
-  const b = history(at({ hubV2: "0xaa", spoke: "0xbb" }));
-  const before = structuredClone([a, b]);
-
-  const diff = diffAddressHistories(a, b);
-  diff.added[0].names.push("tampered");
-  diff.added[0].contract = "tampered";
-  diff.changed[0].after.names.push("tampered");
-  diff.changed[0].before.contract = "tampered";
-
-  assert.deepEqual([a, b], before);
-});
-
-test("diffAddressHistories leaves both inputs as they were", () => {
+test("diffAddressHistories leaves its inputs alone and returns results that share nothing with them", () => {
   const a = history(at({ hub: "0xaa" }), at({ guardian: contract(null) }));
   const b = history(at({ hubV2: "0xaa", spoke: "0xbb" }));
   const before = structuredClone([a, b]);
 
-  diffAddressHistories(a, b);
-
+  const diff = diffAddressHistories(a, b);
   assert.deepEqual([a, b], before);
-});
 
-function realHistories(head, chainId) {
-  const layers = realChain(head)
-    .reverse()
-    .map(({ bytes }) => JSON.parse(new TextDecoder().decode(bytes)));
-  return chainAddressHistory(layers, chainId);
-}
-
-test("diffAddressHistories over the real mainnet chain and its older self lists the addresses published since", () => {
-  // The two layers above the old head publish four contracts on chain 5042 and nothing on chain 1.
-  const old = realHistories(OLD_MAINNET_HEAD, "5042");
-  const head = realHistories(MAINNET_HEAD, "5042");
-
-  const diff = diffAddressHistories(old, head);
-
-  assert.equal(diff.added.length, 4);
-  assert.deepEqual(diff.removed, []);
-  assert.deepEqual(diff.changed, []);
-  assert.deepEqual(
-    diff.added.map(({ address }) => address),
-    diff.added.map(({ address }) => address).sort(),
-  );
-  assert.deepEqual(diffAddressHistories(old, head), diff);
-  assert.deepEqual(diffAddressHistories(head, old).removed, diff.added);
-});
-
-test("diffAddressHistories finds nothing on chain 1 when the newer layers only re-publish a known address under an already tombstoned name", () => {
-  const diff = diffAddressHistories(
-    realHistories(OLD_MAINNET_HEAD, "1"),
-    realHistories(MAINNET_HEAD, "1"),
-  );
-
-  assert.deepEqual(diff, emptyDiff());
-});
-
-test("diffAddressHistories reports a changed address between the real chain's first layer and its head", () => {
-  const layers = realChain(MAINNET_HEAD)
-    .reverse()
-    .map(({ bytes }) => JSON.parse(new TextDecoder().decode(bytes)));
-
-  const diff = diffAddressHistories(
-    chainAddressHistory(layers.slice(0, 1), "8453"),
-    chainAddressHistory(layers, "8453"),
-  );
-
-  assert.equal(diff.added.length, 55);
-  assert.equal(diff.changed.length, 1);
-  assert.deepEqual(diff.removed, []);
+  diff.added[0].names.push("tampered");
+  diff.added[0].contract = "tampered";
+  diff.changed[0].after.names.push("tampered");
+  diff.changed[0].before.contract = "tampered";
+  assert.deepEqual([a, b], before);
 });

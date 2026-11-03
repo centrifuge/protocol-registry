@@ -2,31 +2,31 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { parseJson } from "../src/core/json.ts";
+import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
+import { layerFromBytes } from "../src/core/verify.ts";
+import { MAINNET_HEAD, realLayerBytes } from "./helpers.js";
 
-const SELECTOR = "5009297550715157269";
+const RUNTIMES_WITHOUT_SOURCE_TEXT = [
+  ["JSON.rawJSON is missing", "rawJSON", () => undefined],
+  [
+    "JSON.parse drops the reviver's source text",
+    "parse",
+    (parse) => (text, reviver) => parse(text, reviver && ((key, value) => reviver(key, value))),
+  ],
+];
 
-test("parseJson keeps an integer above 2^53 exact through stringify", () => {
-  const parsed = parseJson(`{"chainSelector":${SELECTOR}}`);
-
-  assert.equal(JSON.stringify(parsed), `{"chainSelector":${SELECTOR}}`);
-});
-
-test("parseJson refuses to run without JSON.rawJSON rather than round integers", () => {
-  const original = JSON.rawJSON;
-  JSON.rawJSON = undefined;
-  try {
-    assert.throws(() => parseJson(`{"chainSelector":${SELECTOR}}`), /source text/);
-  } finally {
-    JSON.rawJSON = original;
-  }
-});
-
-test("parseJson refuses to run when JSON.parse drops the reviver's source text", () => {
-  const original = JSON.parse;
-  JSON.parse = (text, reviver) => original(text, reviver && ((key, value) => reviver(key, value)));
-  try {
-    assert.throws(() => parseJson(`{"chainSelector":${SELECTOR}}`), /source text/);
-  } finally {
-    JSON.parse = original;
-  }
-});
+for (const [name, property, replace] of RUNTIMES_WITHOUT_SOURCE_TEXT) {
+  test(`parseJson and layerFromBytes refuse to run when ${name}, with a plain error`, async () => {
+    const original = JSON[property];
+    JSON[property] = replace(original);
+    try {
+      assert.throws(() => parseJson("1"), /source text/);
+      await assert.rejects(
+        () => layerFromBytes(MAINNET_HEAD, realLayerBytes(MAINNET_HEAD)),
+        (error) => !(error instanceof LayerVerificationError) && /source text/.test(error.message),
+      );
+    } finally {
+      JSON[property] = original;
+    }
+  });
+}

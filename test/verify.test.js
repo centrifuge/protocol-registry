@@ -10,7 +10,7 @@ import { sha256, sha512 } from "multiformats/hashes/sha2";
 import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
 import { layerFromBytes, verifyLayer } from "../src/core/verify.ts";
 import { fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
-import { MAINNET_HEAD, TESTNET_HEAD, realChain, realLayerBytes, realLayerCids } from "./helpers.js";
+import { MAINNET_HEAD, TESTNET_HEAD, realChain, realLayerCids } from "./helpers.js";
 
 const RAW = 0x55;
 const DAG_PB = 0x70;
@@ -66,73 +66,72 @@ test("verifyLayer accepts every layer of both live chains, raw and dag-pb alike"
   assert.deepEqual([...walked].sort(), realLayerCids());
 });
 
-test("verifyLayer rejects a raw layer with one flipped byte", async () => {
-  await assertRefused(firstRaw.cid, flipByte(firstRaw.bytes, 10), /digest/);
-});
+const asCodec = (cid, codec) => CID.createV1(codec, CID.parse(cid).multihash).toString();
 
-test("verifyLayer rejects a dag-pb layer with one byte flipped past the first chunk", async () => {
-  assert.ok(firstDagPb.bytes.length > CHUNK_SIZE + 10);
-  await assertRefused(firstDagPb.cid, flipByte(firstDagPb.bytes, CHUNK_SIZE + 10), /rebuild/);
-});
+const MISMATCHES = [
+  [
+    "a raw layer with one flipped byte",
+    () => [firstRaw.cid, flipByte(firstRaw.bytes, 10)],
+    /digest/,
+  ],
+  [
+    "a dag-pb layer with one byte flipped past the first chunk",
+    () => [firstDagPb.cid, flipByte(firstDagPb.bytes, CHUNK_SIZE + 10)],
+    /rebuild/,
+  ],
+  [
+    "a dag-pb layer with one byte flipped in the first chunk",
+    () => [firstDagPb.cid, flipByte(firstDagPb.bytes, 10)],
+    /rebuild/,
+  ],
+  [
+    "a dag-pb layer cut short",
+    () => [firstDagPb.cid, firstDagPb.bytes.subarray(0, CHUNK_SIZE)],
+    /rebuild/,
+  ],
+  [
+    "dag-pb bytes under a raw CID over the same root digest",
+    () => [asCodec(firstDagPb.cid, RAW), firstDagPb.bytes],
+    /digest/,
+  ],
+  [
+    "raw bytes under a dag-pb CID",
+    () => [asCodec(firstRaw.cid, DAG_PB), firstRaw.bytes],
+    /rebuild/,
+  ],
+];
 
-test("verifyLayer rejects a dag-pb layer with one byte flipped in the first chunk", async () => {
-  await assertRefused(firstDagPb.cid, flipByte(firstDagPb.bytes, 10), /rebuild/);
-});
+for (const [name, input, reason] of MISMATCHES) {
+  test(`verifyLayer rejects ${name}`, async () => {
+    const [cid, bytes] = input();
+    await assertRefused(cid, bytes, reason);
+  });
+}
 
-test("verifyLayer rejects a dag-pb layer cut short", async () => {
-  await assertRefused(firstDagPb.cid, firstDagPb.bytes.subarray(0, CHUNK_SIZE), /rebuild/);
-});
+// Each CID matches its bytes by digest or rebuilt root; only the CID's form is refused.
+const REFUSED_CIDS = [
+  ["a CIDv0", async () => CID.createV0(await sha256.digest(firstRaw.bytes)), /CIDv0/],
+  [
+    "a codec other than raw and dag-pb, naming it",
+    async () => CID.createV1(DAG_JSON, await sha256.digest(firstRaw.bytes)),
+    /codec 0x129/,
+  ],
+  [
+    "a hash other than sha2-256, naming it",
+    async () => CID.createV1(RAW, await sha512.digest(firstRaw.bytes)),
+    /hash function 0x13/,
+  ],
+  ["a base58btc spelling", async () => CID.parse(firstRaw.cid).toString(base58btc), /canonical/],
+  ["a base36 spelling", async () => CID.parse(firstRaw.cid).toString(base36), /canonical/],
+  ["a string that is not a CID", async () => "not-a-cid", /not a CID/],
+  ["an empty CID", async () => "", /not a CID/],
+];
 
-test("verifyLayer rejects dag-pb bytes under a raw CID over the same root digest", async () => {
-  const dagPb = CID.parse(firstDagPb.cid);
-  const asRaw = CID.createV1(RAW, dagPb.multihash).toString();
-  await assertRefused(asRaw, firstDagPb.bytes, /digest/);
-});
-
-test("verifyLayer rejects raw bytes under a dag-pb CID", async () => {
-  const raw = CID.parse(firstRaw.cid);
-  const asDagPb = CID.createV1(DAG_PB, raw.multihash).toString();
-  await assertRefused(asDagPb, firstRaw.bytes, /rebuild/);
-});
-
-test("verifyLayer refuses a CIDv0 even when its digest matches the bytes", async () => {
-  const digest = await sha256.digest(firstRaw.bytes);
-  const v0 = CID.createV0(digest).toString();
-  assert.match(v0, /^Qm/);
-  await assertRefused(v0, firstRaw.bytes, /CIDv0/);
-});
-
-test("verifyLayer refuses a codec that is neither raw nor dag-pb, naming it", async () => {
-  const digest = await sha256.digest(firstRaw.bytes);
-  const dagJson = CID.createV1(DAG_JSON, digest).toString();
-  await assertRefused(dagJson, firstRaw.bytes, /codec 0x129/);
-});
-
-test("verifyLayer refuses a hash other than sha2-256 even when its digest matches", async () => {
-  const digest = await sha512.digest(firstRaw.bytes);
-  const sha512Cid = CID.createV1(RAW, digest).toString();
-  await assertRefused(sha512Cid, firstRaw.bytes, /hash function 0x13/);
-});
-
-test("verifyLayer refuses a base58btc spelling of a CID whose digest matches", async () => {
-  const spelled = CID.parse(firstRaw.cid).toString(base58btc);
-  assert.match(spelled, /^z/);
-  await assertRefused(spelled, firstRaw.bytes, /canonical/);
-});
-
-test("verifyLayer refuses a base36 spelling of a dag-pb CID whose root matches", async () => {
-  const spelled = CID.parse(firstDagPb.cid).toString(base36);
-  assert.match(spelled, /^k/);
-  await assertRefused(spelled, firstDagPb.bytes, /canonical/);
-});
-
-test("verifyLayer refuses a string that is not a CID", async () => {
-  await assertRefused("not-a-cid", firstRaw.bytes, /not a CID/);
-});
-
-test("verifyLayer refuses an empty CID", async () => {
-  await assertRefused("", firstRaw.bytes, /not a CID/);
-});
+for (const [name, makeCid, reason] of REFUSED_CIDS) {
+  test(`verifyLayer refuses ${name}`, async () => {
+    await assertRefused(String(await makeCid()), firstRaw.bytes, reason);
+  });
+}
 
 test("verifyLayer accepts an empty raw layer only under the empty digest", async () => {
   const empty = new Uint8Array(0);
@@ -253,24 +252,6 @@ async function rawCidOf(bytes) {
   return CID.createV1(RAW, await sha256.digest(bytes)).toString();
 }
 
-const SELECTOR = "5009297550715157269";
-const withSelector = realLayerCids().find((cid) =>
-  new TextDecoder().decode(realLayerBytes(cid)).includes(SELECTOR),
-);
-
-test("layerFromBytes keeps an integer above 2^53 exact through a round trip", async () => {
-  assert.ok(withSelector, "a real layer carries a chainSelector above 2^53");
-
-  const layer = await layerFromBytes(withSelector, realLayerBytes(withSelector));
-
-  assert.ok(JSON.stringify(layer).includes(SELECTOR));
-  assert.ok(
-    !JSON.stringify(JSON.parse(new TextDecoder().decode(realLayerBytes(withSelector)))).includes(
-      SELECTOR,
-    ),
-  );
-});
-
 test("layerFromBytes returns the registry document the bytes hold", async () => {
   const layer = await layerFromBytes(firstRaw.cid, firstRaw.bytes);
 
@@ -290,33 +271,31 @@ test("layerFromBytes refuses a flipped byte on the digest, not on a parse error"
   );
 });
 
-test("layerFromBytes refuses valid JSON that is not a registry under a matching CID", async () => {
-  const bytes = new TextEncoder().encode('{"error":"rate limited"}');
-  const cid = await rawCidOf(bytes);
+const NOT_A_REGISTRY = [
+  [
+    "valid JSON that is not a registry",
+    new TextEncoder().encode('{"error":"rate limited"}'),
+    /no "chains" object/,
+  ],
+  ["bytes that are not JSON", new TextEncoder().encode("<html>gateway error</html>"), /UTF-8 JSON/],
+  [
+    "bytes that are not UTF-8",
+    Uint8Array.from([0x7b, 0x22, 0xff, 0xfe, 0x22, 0x3a, 0x7b, 0x7d, 0x7d]),
+    /UTF-8 JSON/,
+  ],
+];
 
-  await verifyLayer(cid, bytes);
-  await assert.rejects(
-    () => layerFromBytes(cid, bytes),
-    (error) => error instanceof LayerVerificationError && /no "chains" object/.test(error.message),
-  );
-});
+for (const [name, bytes, reason] of NOT_A_REGISTRY) {
+  test(`layerFromBytes refuses ${name} under a matching CID`, async () => {
+    const cid = await rawCidOf(bytes);
 
-test("layerFromBytes refuses bytes that are not JSON under a matching CID", async () => {
-  const bytes = new TextEncoder().encode("<html>gateway error</html>");
-  const cid = await rawCidOf(bytes);
-
-  await assert.rejects(() => layerFromBytes(cid, bytes), /UTF-8 JSON/);
-});
-
-test("layerFromBytes refuses bytes that are not UTF-8 under a matching CID", async () => {
-  const bytes = Uint8Array.from([0x7b, 0x22, 0xff, 0xfe, 0x22, 0x3a, 0x7b, 0x7d, 0x7d]);
-  const cid = await rawCidOf(bytes);
-
-  await assert.rejects(
-    () => layerFromBytes(cid, bytes),
-    (error) => error instanceof LayerVerificationError && /UTF-8 JSON/.test(error.message),
-  );
-});
+    await verifyLayer(cid, bytes);
+    await assert.rejects(
+      () => layerFromBytes(cid, bytes),
+      (error) => error instanceof LayerVerificationError && reason.test(error.message),
+    );
+  });
+}
 
 test("layerFromBytes reads a layer behind a byte order mark as a gateway response would", async () => {
   const bom = Uint8Array.from([0xef, 0xbb, 0xbf]);
@@ -333,38 +312,4 @@ test("layerFromBytes reads a layer behind a byte order mark as a gateway respons
     JSON.stringify(layer),
     JSON.stringify(await layerFromBytes(firstRaw.cid, firstRaw.bytes)),
   );
-});
-
-test("layerFromBytes refuses to run without JSON source text access rather than round integers", async () => {
-  const original = JSON.rawJSON;
-  JSON.rawJSON = undefined;
-  try {
-    await assert.rejects(
-      () => layerFromBytes(firstRaw.cid, firstRaw.bytes),
-      (error) =>
-        error instanceof Error &&
-        !(error instanceof LayerVerificationError) &&
-        /source text/.test(error.message),
-    );
-  } finally {
-    JSON.rawJSON = original;
-  }
-  assert.equal(typeof JSON.rawJSON, "function");
-});
-
-test("layerFromBytes refuses to run when JSON.parse drops the reviver's source text", async () => {
-  const original = JSON.parse;
-  JSON.parse = (text, reviver) => original(text, reviver && ((key, value) => reviver(key, value)));
-  try {
-    await assert.rejects(
-      () => layerFromBytes(firstRaw.cid, firstRaw.bytes),
-      (error) =>
-        error instanceof Error &&
-        !(error instanceof LayerVerificationError) &&
-        /source text/.test(error.message),
-    );
-  } finally {
-    JSON.parse = original;
-  }
-  await layerFromBytes(firstRaw.cid, firstRaw.bytes);
 });

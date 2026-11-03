@@ -141,11 +141,6 @@ export function realLayerBytes(cid) {
   return new Uint8Array(gunzipSync(readFileSync(new URL(`${cid}.json.gz`, LAYER_FIXTURES))));
 }
 
-/** The parsed document of a real layer. */
-export function realLayer(cid) {
-  return JSON.parse(new TextDecoder().decode(realLayerBytes(cid)));
-}
-
 /**
  * Every real layer from a head back to its base snapshot, newest first, with the bytes each CID
  * addresses.
@@ -159,24 +154,4 @@ export function realChain(headCid) {
     cid = JSON.parse(new TextDecoder().decode(bytes)).previousRegistry?.ipfsHash ?? null;
   }
   return chain;
-}
-
-/**
- * A fetch-shaped function serving the real layer bytes by CID, as a gateway would; an unknown CID
- * is a 404. Plug it into fetchRegistryFromIpfs for the exact parse path a gateway response takes.
- *
- * @returns {{fetchImpl: Function, calls: string[]}} `calls` holds the CID of each request
- */
-export function realLayerFetch() {
-  const known = new Set(realLayerCids());
-  const calls = [];
-
-  async function fetchImpl(url) {
-    const cid = url.split("/").pop();
-    calls.push(cid);
-    if (!known.has(cid)) return new Response("not found", { status: 404 });
-    return new Response(realLayerBytes(cid), { status: 200 });
-  }
-
-  return { fetchImpl, calls };
 }
