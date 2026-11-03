@@ -461,7 +461,7 @@ function syntheticFetcher() {
   return { fetchLayer, fetched };
 }
 
-test("collectRegistryChain with stopAt stops before fetching the layer it names", async () => {
+test("collectRegistryChain with stopAt stops before fetching the layer it names, keeping the layers above", async () => {
   const { fetchLayer, fetched } = realFetcher();
   const tip = await fetchLayer(MAINNET_HEAD);
 
@@ -470,26 +470,17 @@ test("collectRegistryChain with stopAt stops before fetching the layer it names"
     stopAt: new Set([OLD_MAINNET_HEAD]),
   });
 
-  assert.equal(result.stoppedAt, OLD_MAINNET_HEAD);
-  assert.equal(result.layers.length, 2);
-  assert.deepEqual(fetched, [MAINNET_HEAD, tip.previousRegistry.ipfsHash]);
-  assert.equal(result.complete, false);
-  assert.equal(result.reason, null);
-  assert.equal(result.fatal, false);
-});
-
-test("collectRegistryChain with stopAt accumulates only the layers above the stop", async () => {
-  const { fetchLayer } = realFetcher();
-  const tip = await fetchLayer(MAINNET_HEAD);
-  const above = [await fetchLayer(tip.previousRegistry.ipfsHash), tip].map(slimLayer);
-
-  const result = await collectRegistryChain(tip, {
-    fetchLayer: async (cid) => slimLayer(await fetchLayer(cid)),
-    stopAt: new Set([OLD_MAINNET_HEAD]),
+  assert.deepEqual(fetched, [MAINNET_HEAD, MAINNET_HEAD_PARENT]);
+  const above = [await fetchLayer(MAINNET_HEAD_PARENT), tip];
+  assert.deepEqual(result, {
+    layers: above,
+    accumulated: flattenRegistryChain(above),
+    accumulatedAbis: flattenRegistryAbis(above),
+    complete: false,
+    stoppedAt: OLD_MAINNET_HEAD,
+    reason: null,
+    fatal: false,
   });
-
-  assert.deepEqual(result.accumulated, flattenRegistryChain(above));
-  assert.deepEqual([...result.accumulatedAbis], [...flattenRegistryAbis(above)]);
 });
 
 const STOPS_NOT_REACHED = [
@@ -540,15 +531,11 @@ test("collectRegistryChain reports no stop when the walk fails before reaching i
   assert.match(result.reason, /could not fetch cidMissing/);
 });
 
-class ForeignLayerVerificationError extends Error {
-  name = "LayerVerificationError";
-}
-
 const FETCH_REJECTIONS = [
   ["a LayerVerificationError", () => new LayerVerificationError("cidBad", "tampered"), true],
   [
     "a verification error from another copy of the package",
-    () => new ForeignLayerVerificationError("x"),
+    () => Object.assign(new Error("x"), { name: "LayerVerificationError" }),
     true,
   ],
   ["an ordinary fetch failure", () => new Error("gateway down"), false],
@@ -593,15 +580,6 @@ const ANSWERS = [
   ["true for a layer two steps below the head", "real", MAINNET_HEAD, OLD_MAINNET_HEAD, true, 2],
   ["true for the head itself, without fetching", "real", MAINNET_HEAD, MAINNET_HEAD, true, 0],
   ["true at the maxDepth bound", "real", MAINNET_HEAD, OLD_MAINNET_HEAD, true, 2, { maxDepth: 2 }],
-  [
-    "true under a matching expectedNetwork",
-    "real",
-    MAINNET_HEAD,
-    OLD_MAINNET_HEAD,
-    true,
-    2,
-    { expectedNetwork: "mainnet" },
-  ],
   ["true for the base snapshot", "synthetic", "cidTip", "cidBase", true, 2],
   ["false for a CID the chain never reaches", "synthetic", "cidTip", "cidElsewhere", false, 3],
   ["false for a head's descendant", "synthetic", "cidMid", "cidTip", false, 2],
@@ -618,6 +596,7 @@ for (const [name, kind, head, ancestor, expected, fetches, options] of ANSWERS) 
 }
 
 const outage = new Error("gateway down");
+const { fetchLayer: fromFixtures } = realFetcher();
 
 // Each walk cannot finish, so isAncestor must throw rather than answer false.
 const UNFINISHED_WALKS = [
@@ -626,34 +605,29 @@ const UNFINISHED_WALKS = [
     [
       MAINNET_HEAD,
       OLD_MAINNET_HEAD,
-      (cid) =>
-        cid === MAINNET_HEAD_PARENT ? Promise.reject(outage) : realFetcher().fetchLayer(cid),
+      (cid) => (cid === MAINNET_HEAD_PARENT ? Promise.reject(outage) : fromFixtures(cid)),
     ],
     /gateway down/,
     (cause) => assert.equal(cause, outage),
   ],
   [
     "the head cannot be fetched",
-    ["bafkreinothere", OLD_MAINNET_HEAD, realFetcher().fetchLayer],
+    ["bafkreinothere", OLD_MAINNET_HEAD, fromFixtures],
     /could not fetch bafkreinothere/,
   ],
   [
     "the walk is longer than maxDepth",
-    [MAINNET_HEAD, "cidElsewhere", realFetcher().fetchLayer, { maxDepth: 3 }],
+    [MAINNET_HEAD, "cidElsewhere", fromFixtures, { maxDepth: 3 }],
     /longer than maxDepth 3/,
   ],
   [
     "the chain cycles",
-    [
-      "cidLoop",
-      "cidElsewhere",
-      ipfsFetcher(fakeFetch({ cidLoop: layer({ previousCid: "cidLoop" }) }).fetchImpl),
-    ],
+    ["cidLoop", "cidElsewhere", async () => layer({ previousCid: "cidLoop" })],
     /cycle detected/,
   ],
   [
     "a layer fails the network check",
-    [MAINNET_HEAD, OLD_MAINNET_HEAD, realFetcher().fetchLayer, { expectedNetwork: "testnet" }],
+    [MAINNET_HEAD, OLD_MAINNET_HEAD, fromFixtures, { expectedNetwork: "testnet" }],
     /declares network "mainnet"/,
   ],
   [

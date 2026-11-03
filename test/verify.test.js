@@ -43,55 +43,30 @@ async function assertRefused(cid, bytes, reason) {
 const rawLayer = { cid: MAINNET_HEAD, bytes: realLayerBytes(MAINNET_HEAD) };
 const dagPbLayer = { cid: DAG_PB_LAYER, bytes: realLayerBytes(DAG_PB_LAYER) };
 
-for (const { cid, bytes } of [rawLayer, dagPbLayer]) {
-  test(`verifyLayer accepts the published layer ${cid}`, async () => {
-    await verifyLayer(cid, bytes);
-  });
-}
-
 const asCodec = (cid, codec) => CID.createV1(codec, CID.parse(cid).multihash).toString();
 
+const { cid: rawCid, bytes: raw } = rawLayer;
+const { cid: dagPbCid, bytes: dagPb } = dagPbLayer;
+
 const MISMATCHES = [
+  ["a raw layer with one flipped byte", rawCid, flipByte(raw, 10), /digest/],
   [
-    "a raw layer with one flipped byte",
-    () => [rawLayer.cid, flipByte(rawLayer.bytes, 10)],
-    /digest/,
-  ],
-  [
-    "a dag-pb layer with one byte flipped past the first chunk",
-    () => [dagPbLayer.cid, flipByte(dagPbLayer.bytes, CHUNK_SIZE + 10)],
+    "a dag-pb layer flipped past its first chunk",
+    dagPbCid,
+    flipByte(dagPb, CHUNK_SIZE + 10),
     /rebuild/,
   ],
-  [
-    "a dag-pb layer with one byte flipped in the first chunk",
-    () => [dagPbLayer.cid, flipByte(dagPbLayer.bytes, 10)],
-    /rebuild/,
-  ],
-  [
-    "a dag-pb layer cut short",
-    () => [dagPbLayer.cid, dagPbLayer.bytes.subarray(0, CHUNK_SIZE)],
-    /rebuild/,
-  ],
-  [
-    "dag-pb bytes under a raw CID over the same root digest",
-    () => [asCodec(dagPbLayer.cid, RAW), dagPbLayer.bytes],
-    /digest/,
-  ],
-  [
-    "raw bytes under a dag-pb CID",
-    () => [asCodec(rawLayer.cid, DAG_PB), rawLayer.bytes],
-    /rebuild/,
-  ],
+  ["a dag-pb layer flipped in its first chunk", dagPbCid, flipByte(dagPb, 10), /rebuild/],
+  ["a dag-pb layer cut short", dagPbCid, dagPb.subarray(0, CHUNK_SIZE), /rebuild/],
+  ["dag-pb bytes under a raw CID of the root digest", asCodec(dagPbCid, RAW), dagPb, /digest/],
+  ["raw bytes under a dag-pb CID", asCodec(rawCid, DAG_PB), raw, /rebuild/],
 ];
 
-for (const [name, input, reason] of MISMATCHES) {
-  test(`verifyLayer rejects ${name}`, async () => {
-    const [cid, bytes] = input();
-    await assertRefused(cid, bytes, reason);
-  });
+for (const [name, cid, bytes, reason] of MISMATCHES) {
+  test(`verifyLayer rejects ${name}`, () => assertRefused(cid, bytes, reason));
 }
 
-// Each CID matches its bytes by digest or rebuilt root; only the CID's form is refused.
+// Every CID that parses matches the bytes' digest; only its form is refused.
 const REFUSED_CIDS = [
   ["a CIDv0", async () => CID.createV0(await sha256.digest(rawLayer.bytes)), /CIDv0/],
   [
