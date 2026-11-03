@@ -2,8 +2,8 @@
  * @fileoverview Fixture builders for the registry script tests.
  *
  * Most registry documents are small enough to build inline, which keeps each test's input visible
- * next to its assertions. The real published layers of both chains live under
- * test/fixtures/layers/ and are read through the helpers at the bottom.
+ * next to its assertions. Four real published layers live under test/fixtures/layers/ and are read
+ * through the helpers at the bottom.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -121,12 +121,14 @@ export function ipfsFetcher(fetchImpl = fakeFetch({}).fetchImpl) {
 
 const LAYER_FIXTURES = new URL("./fixtures/layers/", import.meta.url);
 
-/** Head of the mainnet chain the fixtures hold. */
+/** The newest mainnet layer the fixtures hold. */
 export const MAINNET_HEAD = "bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi";
-/** Head of the testnet chain the fixtures hold. */
-export const TESTNET_HEAD = "bafkreifwkz42zr3vxqo3767ifis32nuhsfbm4h7ubd5aei45wthawxdumm";
-/** The mainnet layer published before the last two; the head's grandparent. */
+/** The layer `MAINNET_HEAD` points to. */
+export const MAINNET_HEAD_PARENT = "bafkreibch7ncaj3hjsdv3kye4lkng2slb7jrphc4l5elr2twgvojx7dkmy";
+/** The layer `MAINNET_HEAD_PARENT` points to: an older head, two steps below. */
 export const OLD_MAINNET_HEAD = "bafkreif3upmmqo5ulmu2clbgkgoy2w5qtw5frrm5hzj5tqme4rczlpgf7m";
+/** The layer `OLD_MAINNET_HEAD` points to, a dag-pb file of three chunks. Its parent is not held. */
+export const DAG_PB_LAYER = "bafybeia6nahab2jjqyslao3fley7asdiumu7mmsvrea6dgz3kfwa7n5e2e";
 
 /** Every CID that has a real layer committed under test/fixtures/layers/. */
 export function realLayerCids() {
@@ -139,19 +141,4 @@ export function realLayerCids() {
 /** The bytes a gateway served for this CID, exactly as committed. */
 export function realLayerBytes(cid) {
   return new Uint8Array(gunzipSync(readFileSync(new URL(`${cid}.json.gz`, LAYER_FIXTURES))));
-}
-
-/**
- * Every real layer from a head back to its base snapshot, newest first, with the bytes each CID
- * addresses.
- */
-export function realChain(headCid) {
-  const chain = [];
-  let cid = headCid;
-  while (cid) {
-    const bytes = realLayerBytes(cid);
-    chain.push({ cid, bytes });
-    cid = JSON.parse(new TextDecoder().decode(bytes)).previousRegistry?.ipfsHash ?? null;
-  }
-  return chain;
 }

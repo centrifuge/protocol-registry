@@ -10,17 +10,13 @@ import { sha256, sha512 } from "multiformats/hashes/sha2";
 import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
 import { layerFromBytes, verifyLayer } from "../src/core/verify.ts";
 import { fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
-import { MAINNET_HEAD, TESTNET_HEAD, realChain, realLayerCids } from "./helpers.js";
+import { DAG_PB_LAYER, MAINNET_HEAD, realLayerBytes } from "./helpers.js";
 
 const RAW = 0x55;
 const DAG_PB = 0x70;
 const DAG_JSON = 0x0129;
 const CHUNK_SIZE = 262144;
 const LINKS_PER_NODE = 174;
-
-function codecOf(cid) {
-  return CID.parse(cid).code;
-}
 
 function flipByte(bytes, offset) {
   const tampered = new Uint8Array(bytes);
@@ -40,63 +36,46 @@ async function assertRefused(cid, bytes, reason) {
   );
 }
 
-const mainnet = realChain(MAINNET_HEAD);
-const testnet = realChain(TESTNET_HEAD);
-const firstRaw = mainnet.find(({ cid }) => codecOf(cid) === RAW);
-const firstDagPb = mainnet.find(({ cid }) => codecOf(cid) === DAG_PB);
+const rawLayer = { cid: MAINNET_HEAD, bytes: realLayerBytes(MAINNET_HEAD) };
+const dagPbLayer = { cid: DAG_PB_LAYER, bytes: realLayerBytes(DAG_PB_LAYER) };
 
-test("verifyLayer accepts every layer of both live chains, raw and dag-pb alike", async () => {
-  const counts = {
-    mainnet: { [RAW]: 0, [DAG_PB]: 0 },
-    testnet: { [RAW]: 0, [DAG_PB]: 0 },
-  };
-  for (const [name, layers] of [
-    ["mainnet", mainnet],
-    ["testnet", testnet],
-  ]) {
-    for (const { cid, bytes } of layers) {
-      await verifyLayer(cid, bytes);
-      counts[name][codecOf(cid)]++;
-    }
-  }
-
-  assert.deepEqual(counts.mainnet, { [RAW]: 8, [DAG_PB]: 6 });
-  assert.deepEqual(counts.testnet, { [RAW]: 25, [DAG_PB]: 28 });
-  const walked = new Set([...mainnet, ...testnet].map(({ cid }) => cid));
-  assert.deepEqual([...walked].sort(), realLayerCids());
-});
+for (const { cid, bytes } of [rawLayer, dagPbLayer]) {
+  test(`verifyLayer accepts the published layer ${cid}`, async () => {
+    await verifyLayer(cid, bytes);
+  });
+}
 
 const asCodec = (cid, codec) => CID.createV1(codec, CID.parse(cid).multihash).toString();
 
 const MISMATCHES = [
   [
     "a raw layer with one flipped byte",
-    () => [firstRaw.cid, flipByte(firstRaw.bytes, 10)],
+    () => [rawLayer.cid, flipByte(rawLayer.bytes, 10)],
     /digest/,
   ],
   [
     "a dag-pb layer with one byte flipped past the first chunk",
-    () => [firstDagPb.cid, flipByte(firstDagPb.bytes, CHUNK_SIZE + 10)],
+    () => [dagPbLayer.cid, flipByte(dagPbLayer.bytes, CHUNK_SIZE + 10)],
     /rebuild/,
   ],
   [
     "a dag-pb layer with one byte flipped in the first chunk",
-    () => [firstDagPb.cid, flipByte(firstDagPb.bytes, 10)],
+    () => [dagPbLayer.cid, flipByte(dagPbLayer.bytes, 10)],
     /rebuild/,
   ],
   [
     "a dag-pb layer cut short",
-    () => [firstDagPb.cid, firstDagPb.bytes.subarray(0, CHUNK_SIZE)],
+    () => [dagPbLayer.cid, dagPbLayer.bytes.subarray(0, CHUNK_SIZE)],
     /rebuild/,
   ],
   [
     "dag-pb bytes under a raw CID over the same root digest",
-    () => [asCodec(firstDagPb.cid, RAW), firstDagPb.bytes],
+    () => [asCodec(dagPbLayer.cid, RAW), dagPbLayer.bytes],
     /digest/,
   ],
   [
     "raw bytes under a dag-pb CID",
-    () => [asCodec(firstRaw.cid, DAG_PB), firstRaw.bytes],
+    () => [asCodec(rawLayer.cid, DAG_PB), rawLayer.bytes],
     /rebuild/,
   ],
 ];
@@ -110,26 +89,26 @@ for (const [name, input, reason] of MISMATCHES) {
 
 // Each CID matches its bytes by digest or rebuilt root; only the CID's form is refused.
 const REFUSED_CIDS = [
-  ["a CIDv0", async () => CID.createV0(await sha256.digest(firstRaw.bytes)), /CIDv0/],
+  ["a CIDv0", async () => CID.createV0(await sha256.digest(rawLayer.bytes)), /CIDv0/],
   [
     "a codec other than raw and dag-pb, naming it",
-    async () => CID.createV1(DAG_JSON, await sha256.digest(firstRaw.bytes)),
+    async () => CID.createV1(DAG_JSON, await sha256.digest(rawLayer.bytes)),
     /codec 0x129/,
   ],
   [
     "a hash other than sha2-256, naming it",
-    async () => CID.createV1(RAW, await sha512.digest(firstRaw.bytes)),
+    async () => CID.createV1(RAW, await sha512.digest(rawLayer.bytes)),
     /hash function 0x13/,
   ],
-  ["a base58btc spelling", async () => CID.parse(firstRaw.cid).toString(base58btc), /canonical/],
-  ["a base36 spelling", async () => CID.parse(firstRaw.cid).toString(base36), /canonical/],
+  ["a base58btc spelling", async () => CID.parse(rawLayer.cid).toString(base58btc), /canonical/],
+  ["a base36 spelling", async () => CID.parse(rawLayer.cid).toString(base36), /canonical/],
   ["a string that is not a CID", async () => "not-a-cid", /not a CID/],
   ["an empty CID", async () => "", /not a CID/],
 ];
 
 for (const [name, makeCid, reason] of REFUSED_CIDS) {
   test(`verifyLayer refuses ${name}`, async () => {
-    await assertRefused(String(await makeCid()), firstRaw.bytes, reason);
+    await assertRefused(String(await makeCid()), rawLayer.bytes, reason);
   });
 }
 
@@ -232,7 +211,7 @@ test("verifyLayer rebuilds a file of 175 chunks as a root over two nodes", async
 });
 
 test("verifyLayer refuses a dag-pb wrapper around a single chunk, which ipfs add keeps as the raw leaf", async () => {
-  const bytes = firstRaw.bytes;
+  const bytes = rawLayer.bytes;
   assert.ok(bytes.length <= CHUNK_SIZE);
   const leaf = {
     cid: CID.createV1(RAW, await sha256.digest(bytes)),
@@ -245,7 +224,7 @@ test("verifyLayer refuses a dag-pb wrapper around a single chunk, which ipfs add
 
 test("the hand-assembled root agrees with a real published layer", async () => {
   // Guards the oracle itself: if it cannot reproduce a CID the network serves, it proves nothing.
-  assert.equal(await expectedRoot(firstDagPb.bytes), firstDagPb.cid);
+  assert.equal(await expectedRoot(dagPbLayer.bytes), dagPbLayer.cid);
 });
 
 async function rawCidOf(bytes) {
@@ -253,20 +232,20 @@ async function rawCidOf(bytes) {
 }
 
 test("layerFromBytes returns the registry document the bytes hold", async () => {
-  const layer = await layerFromBytes(firstRaw.cid, firstRaw.bytes);
+  const layer = await layerFromBytes(rawLayer.cid, rawLayer.bytes);
 
   assert.deepEqual(
     Object.keys(layer.chains),
-    Object.keys(JSON.parse(new TextDecoder().decode(firstRaw.bytes)).chains),
+    Object.keys(JSON.parse(new TextDecoder().decode(rawLayer.bytes)).chains),
   );
 });
 
 test("layerFromBytes refuses a flipped byte on the digest, not on a parse error", async () => {
-  const tampered = flipByte(firstRaw.bytes, 0);
+  const tampered = flipByte(rawLayer.bytes, 0);
   assert.throws(() => JSON.parse(new TextDecoder().decode(tampered)));
 
   await assert.rejects(
-    () => layerFromBytes(firstRaw.cid, tampered),
+    () => layerFromBytes(rawLayer.cid, tampered),
     (error) => error instanceof LayerVerificationError && /digest/.test(error.message),
   );
 });
@@ -299,7 +278,7 @@ for (const [name, bytes, reason] of NOT_A_REGISTRY) {
 
 test("layerFromBytes reads a layer behind a byte order mark as a gateway response would", async () => {
   const bom = Uint8Array.from([0xef, 0xbb, 0xbf]);
-  const bytes = new Uint8Array([...bom, ...firstRaw.bytes]);
+  const bytes = new Uint8Array([...bom, ...rawLayer.bytes]);
   const cid = await rawCidOf(bytes);
   const served = await fetchRegistryFromIpfs(cid, {
     fetchImpl: async () => new Response(bytes, { status: 200 }),
@@ -310,6 +289,6 @@ test("layerFromBytes reads a layer behind a byte order mark as a gateway respons
   assert.deepEqual(layer, served);
   assert.equal(
     JSON.stringify(layer),
-    JSON.stringify(await layerFromBytes(firstRaw.cid, firstRaw.bytes)),
+    JSON.stringify(await layerFromBytes(rawLayer.cid, rawLayer.bytes)),
   );
 });

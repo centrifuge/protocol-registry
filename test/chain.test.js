@@ -13,14 +13,13 @@ import { LayerVerificationError } from "../src/core/layer-verification-error.ts"
 import { layerFromBytes } from "../src/core/verify.ts";
 import {
   MAINNET_HEAD,
+  MAINNET_HEAD_PARENT,
   OLD_MAINNET_HEAD,
-  TESTNET_HEAD,
   chain,
   contract,
   fakeFetch,
   ipfsFetcher,
   layer,
-  realChain,
   realLayerBytes,
   realLayerCids,
 } from "./helpers.js";
@@ -446,6 +445,22 @@ function realFetcher({ tampered = null } = {}) {
   return { fetchLayer, fetched };
 }
 
+/** A fetchLayer over a complete synthetic chain, cidTip -> cidMid -> cidBase, recording what it fetched. */
+function syntheticFetcher() {
+  const layers = {
+    cidTip: layer({ previousCid: "cidMid" }),
+    cidMid: layer({ previousCid: "cidBase" }),
+    cidBase: layer({}),
+  };
+  const fetched = [];
+  const fetchLayer = async (cid) => {
+    fetched.push(cid);
+    if (!layers[cid]) throw new Error(`could not fetch ${cid}`);
+    return structuredClone(layers[cid]);
+  };
+  return { fetchLayer, fetched };
+}
+
 test("collectRegistryChain with stopAt stops before fetching the layer it names", async () => {
   const { fetchLayer, fetched } = realFetcher();
   const tip = await fetchLayer(MAINNET_HEAD);
@@ -479,23 +494,22 @@ test("collectRegistryChain with stopAt accumulates only the layers above the sto
 
 const STOPS_NOT_REACHED = [
   ["is absent", undefined],
-  ["names only the tip's own CID", MAINNET_HEAD],
-  ["is not in the chain", TESTNET_HEAD],
+  ["names only the tip's own CID", "cidTip"],
+  ["is not in the chain", "cidElsewhere"],
 ];
 
 for (const [name, stop] of STOPS_NOT_REACHED) {
   test(`collectRegistryChain walks to the base and reports no stop when stopAt ${name}`, async () => {
-    const { fetchLayer, fetched } = realFetcher();
-    const tip = await fetchLayer(MAINNET_HEAD);
+    const { fetchLayer, fetched } = syntheticFetcher();
 
-    const result = await collectRegistryChain(tip, {
+    const result = await collectRegistryChain(await fetchLayer("cidTip"), {
       fetchLayer,
       stopAt: stop && new Set([stop]),
     });
 
     assert.equal(result.stoppedAt, null);
     assert.equal(result.complete, true);
-    assert.equal(fetched.length, 14);
+    assert.deepEqual(fetched, ["cidTip", "cidMid", "cidBase"]);
   });
 }
 
@@ -573,33 +587,29 @@ test("slimLayer keeps which ABIs a layer carries and drops their bodies", () => 
   assert.equal(full.abis.Hub.length, 1, "the input is not modified");
 });
 
+const FETCHERS = { real: realFetcher, synthetic: syntheticFetcher };
+
 const ANSWERS = [
-  ["true for a layer two steps below the head", MAINNET_HEAD, OLD_MAINNET_HEAD, {}, true, 2],
-  ["true for the head itself, without fetching", MAINNET_HEAD, MAINNET_HEAD, {}, true, 0],
-  ["true for the base snapshot", MAINNET_HEAD, realChain(MAINNET_HEAD).at(-1).cid, {}, true, 13],
-  [
-    "true when the stop sits at the maxDepth bound",
-    MAINNET_HEAD,
-    OLD_MAINNET_HEAD,
-    { maxDepth: 2 },
-    true,
-    2,
-  ],
+  ["true for a layer two steps below the head", "real", MAINNET_HEAD, OLD_MAINNET_HEAD, true, 2],
+  ["true for the head itself, without fetching", "real", MAINNET_HEAD, MAINNET_HEAD, true, 0],
+  ["true at the maxDepth bound", "real", MAINNET_HEAD, OLD_MAINNET_HEAD, true, 2, { maxDepth: 2 }],
   [
     "true under a matching expectedNetwork",
+    "real",
     MAINNET_HEAD,
     OLD_MAINNET_HEAD,
-    { expectedNetwork: "mainnet" },
     true,
     2,
+    { expectedNetwork: "mainnet" },
   ],
-  ["false for a testnet layer against the mainnet head", MAINNET_HEAD, TESTNET_HEAD, {}, false, 14],
-  ["false for a head's descendant", OLD_MAINNET_HEAD, MAINNET_HEAD, {}, false, 12],
+  ["true for the base snapshot", "synthetic", "cidTip", "cidBase", true, 2],
+  ["false for a CID the chain never reaches", "synthetic", "cidTip", "cidElsewhere", false, 3],
+  ["false for a head's descendant", "synthetic", "cidMid", "cidTip", false, 2],
 ];
 
-for (const [name, head, ancestor, options, expected, fetches] of ANSWERS) {
+for (const [name, kind, head, ancestor, expected, fetches, options] of ANSWERS) {
   test(`isAncestor is ${name}, never fetching the ancestor`, async () => {
-    const { fetchLayer, fetched } = realFetcher();
+    const { fetchLayer, fetched } = FETCHERS[kind]();
 
     assert.equal(await isAncestor(head, ancestor, fetchLayer, options), expected);
     assert.equal(fetched.length, fetches);
@@ -607,7 +617,6 @@ for (const [name, head, ancestor, options, expected, fetches] of ANSWERS) {
   });
 }
 
-const BELOW_HEAD = realChain(MAINNET_HEAD)[1].cid;
 const outage = new Error("gateway down");
 
 // Each walk cannot finish, so isAncestor must throw rather than answer false.
@@ -617,7 +626,8 @@ const UNFINISHED_WALKS = [
     [
       MAINNET_HEAD,
       OLD_MAINNET_HEAD,
-      (cid) => (cid === BELOW_HEAD ? Promise.reject(outage) : realFetcher().fetchLayer(cid)),
+      (cid) =>
+        cid === MAINNET_HEAD_PARENT ? Promise.reject(outage) : realFetcher().fetchLayer(cid),
     ],
     /gateway down/,
     (cause) => assert.equal(cause, outage),
@@ -629,7 +639,7 @@ const UNFINISHED_WALKS = [
   ],
   [
     "the walk is longer than maxDepth",
-    [MAINNET_HEAD, TESTNET_HEAD, realFetcher().fetchLayer, { maxDepth: 3 }],
+    [MAINNET_HEAD, "cidElsewhere", realFetcher().fetchLayer, { maxDepth: 3 }],
     /longer than maxDepth 3/,
   ],
   [
@@ -653,11 +663,11 @@ const UNFINISHED_WALKS = [
   ],
   [
     "a layer below the head fails verification",
-    [MAINNET_HEAD, OLD_MAINNET_HEAD, realFetcher({ tampered: BELOW_HEAD }).fetchLayer],
-    new RegExp(`${BELOW_HEAD}.*failed verification`),
+    [MAINNET_HEAD, OLD_MAINNET_HEAD, realFetcher({ tampered: MAINNET_HEAD_PARENT }).fetchLayer],
+    new RegExp(`${MAINNET_HEAD_PARENT}.*failed verification`),
     (cause) => {
       assert.ok(cause instanceof LayerVerificationError, String(cause));
-      assert.equal(cause.cid, BELOW_HEAD);
+      assert.equal(cause.cid, MAINNET_HEAD_PARENT);
     },
   ],
 ];

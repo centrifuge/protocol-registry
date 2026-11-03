@@ -460,24 +460,19 @@ pnpm format:check
 pnpm cf-typegen  # after changing wrangler.jsonc
 pnpm build:package  # builds the package into packages/registry-core/dist
 pnpm check:package  # smoke check of the packed package; needs the network
+pnpm verify-chain mainnet  # verifies every live layer against its CID; needs the network
 ```
 
 Tests are JavaScript, as the scripts they came from tested with node:test, and run the TypeScript
 sources directly (Node 22.18+). Synthetic layers are built inline, so each test's input sits next
 to its assertions (`layer()`, `chain()` and `contract()` in `test/helpers.js`).
 
-Real layers live under `test/fixtures/layers/<cid>.json.gz`: every layer of the mainnet chain from
-head `bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi` down (14 layers) and of the
-testnet chain from head `bafkreifwkz42zr3vxqo3767ifis32nuhsfbm4h7ubd5aei45wthawxdumm` down (53
-layers), gzip of the bytes a gateway served. `realLayerBytes(cid)` and `realChain(head)` in
-`test/helpers.js` read them. `verifyLayer` proves each file against its CID, so a fixture needs no
-other provenance.
-
-The fixtures are a frozen snapshot of both chains at those two heads (the constants in
-`test/helpers.js`), not a mirror of the live chains. The heads pin counts and stop points in
-`test/verify.test.js`, `test/chain.test.js` and `test/address-history.test.js`. Add a layer only
-when it brings a shape no fixture has (a dag-pb file over 174 chunks, say), then update those three
-files, and keep `OLD_MAINNET_HEAD` the head's grandparent or re-derive what uses it. To fetch one:
+Four real layers live under `test/fixtures/layers/<cid>.json.gz`, gzip of the bytes a gateway
+served: mainnet head `bafkreig62ekjinmxgc47a262ohy7l3vk7r4xqibbdi3xmhdqgknbfx4xpi` and the three
+layers below it, the last a dag-pb file of three chunks. The constants in `test/helpers.js` name
+them, and `realLayerBytes(cid)` reads one. `verifyLayer` proves each file against its CID, so a
+fixture needs no other provenance. A shape no published layer has (a dag-pb file over 174 chunks)
+is built in the test, not committed. To fetch a layer:
 
 ```bash
 curl -fsS -o "<tmp>/<cid>" "https://centrifuge-files.mypinata.cloud/ipfs/<cid>" \
@@ -493,3 +488,9 @@ dependencies differ from the root's pins for what `src/core/` imports. `pnpm che
 the packed build from outside the repository and asserts what a consumer receives: the exports, the
 shipped files, the types (compiled under `bundler`, `nodenext` and `node10` resolution), verification
 of real layers, and a `chainSelector` above 2^53 surviving `layerFromBytes`.
+
+`pnpm verify-chain <mainnet|testnet> [--head <cid>]` walks the live chain from the CID the
+network's hostname serves (or `--head`) through the gateways, verifies every layer with
+`layerFromBytes`, prints one line per layer and the count, and exits 1 naming the CID of a layer no
+gateway served matching bytes for. Run it for both networks before a release of the package and
+after a publish of a layer.
