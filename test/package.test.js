@@ -37,6 +37,16 @@ test("the package depends on exactly the packages the core imports, at the root'
   }
 });
 
+test("the package has one runtime dependency, and checks its encoder against the importer in development", () => {
+  const root = readJson("../package.json");
+  const published = readJson("../packages/registry-core/package.json");
+
+  assert.deepEqual(Object.keys(published.dependencies), ["multiformats"]);
+  assert.deepEqual(published.devDependencies, {
+    "ipfs-unixfs-importer": root.devDependencies["ipfs-unixfs-importer"],
+  });
+});
+
 test("the core imports no Node built-in, so it runs wherever the caller's runtime does", () => {
   assert.deepEqual(specifiers.filter(isBuiltin), []);
 });

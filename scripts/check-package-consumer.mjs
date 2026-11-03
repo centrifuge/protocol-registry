@@ -83,6 +83,8 @@ const required = createRequire(import.meta.url)("@centrifuge/registry-core");
 assert.deepEqual(Object.keys(required).sort(), EXPORTED_VALUES);
 
 assert.deepEqual(readdirSync(PACKAGE_DIR).sort(), ["LICENSE", "dist", "package.json"]);
+const manifest = JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8"));
+assert.deepEqual(Object.keys(manifest.dependencies), ["multiformats"]);
 const distDir = join(PACKAGE_DIR, "dist");
 const shipped = filesUnder(distDir);
 assert.deepEqual(shipped.map((file) => relative(distDir, file)).sort(), expectedDistFiles);

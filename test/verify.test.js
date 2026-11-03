@@ -4,11 +4,15 @@ import { createHash } from "node:crypto";
 
 import { base36 } from "multiformats/bases/base36";
 import { base58btc } from "multiformats/bases/base58";
+import { importer } from "ipfs-unixfs-importer";
+import { fixedSize } from "ipfs-unixfs-importer/chunker";
+import { balanced } from "ipfs-unixfs-importer/layout";
+import { equals } from "multiformats/bytes";
 import { CID } from "multiformats/cid";
 import { sha256, sha512 } from "multiformats/hashes/sha2";
 
 import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
-import { layerFromBytes, verifyLayer } from "../src/core/verify.ts";
+import { layerFromBytes, unixfsFileRoot, verifyLayer } from "../src/core/verify.ts";
 import { fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
 import { DAG_PB_LAYER, MAINNET_HEAD, realLayerBytes } from "./helpers.js";
 
@@ -119,75 +123,23 @@ test("verifyLayer accepts an empty raw layer only under the empty digest", async
   await assertRefused(emptyCid, new Uint8Array([1]), /digest/);
 });
 
-// The published layers are at most four chunks, so they cannot tell 174 links per node from any
-// larger number. The expected roots below are assembled by hand from the UnixFS and dag-pb wire
-// formats, never through the importer.
-
-function varint(value) {
-  const out = [];
-  let rest = BigInt(value);
-  while (rest >= 0x80n) {
-    out.push(Number(rest & 0x7fn) | 0x80);
-    rest >>= 7n;
-  }
-  out.push(Number(rest));
-  return Uint8Array.from(out);
-}
-
-function concat(parts) {
-  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
-
-function field(tag, payload) {
-  return concat([varint(tag), varint(payload.length), payload]);
-}
-
-/** A UnixFS file node over `children`: { cid, tsize, filesize }. Returns { block, cid, tsize, filesize }. */
-async function fileNode(children) {
-  const links = children.map((child) =>
-    field(
-      0x12,
-      concat([
-        field(0x0a, child.cid.bytes),
-        field(0x12, new Uint8Array(0)),
-        concat([varint(0x18), varint(child.tsize)]),
-      ]),
-    ),
+/** The root `ipfs add --cid-version 1` gives, computed by the reference importer. */
+async function importerRoot(bytes, { chunkSize = CHUNK_SIZE, linksPerNode = LINKS_PER_NODE } = {}) {
+  const entries = importer(
+    [{ content: bytes }],
+    { put: async (cid) => cid },
+    {
+      cidVersion: 1,
+      rawLeaves: true,
+      reduceSingleLeafToSelf: true,
+      wrapWithDirectory: false,
+      chunker: fixedSize({ chunkSize }),
+      layout: balanced({ maxChildrenPerNode: linksPerNode }),
+    },
   );
-  const filesize = children.reduce((sum, child) => sum + child.filesize, 0);
-  const unixfs = concat([
-    concat([varint(0x08), varint(2)]),
-    concat([varint(0x18), varint(filesize)]),
-    ...children.map((child) => concat([varint(0x20), varint(child.filesize)])),
-  ]);
-  const block = concat([...links, field(0x0a, unixfs)]);
-  const cid = CID.createV1(DAG_PB, await sha256.digest(block));
-  const tsize = block.length + children.reduce((sum, child) => sum + child.tsize, 0);
-  return { block, cid, tsize, filesize };
-}
-
-async function expectedRoot(bytes) {
-  const leaves = [];
-  for (let offset = 0; offset < bytes.length; offset += CHUNK_SIZE) {
-    const chunk = bytes.subarray(offset, offset + CHUNK_SIZE);
-    const cid = CID.createV1(RAW, await sha256.digest(chunk));
-    leaves.push({ cid, tsize: chunk.length, filesize: chunk.length });
-  }
-  let level = leaves;
-  while (level.length > 1) {
-    const next = [];
-    for (let i = 0; i < level.length; i += LINKS_PER_NODE) {
-      next.push(await fileNode(level.slice(i, i + LINKS_PER_NODE)));
-    }
-    level = next;
-  }
-  return level[0].cid.toString();
+  let root;
+  for await (const entry of entries) root = entry.cid;
+  return root;
 }
 
 function pseudoRandomBytes(length) {
@@ -200,31 +152,47 @@ function pseudoRandomBytes(length) {
   return out;
 }
 
-test("verifyLayer rebuilds a file of exactly 174 chunks as one node with 174 links", async () => {
-  const bytes = pseudoRandomBytes(LINKS_PER_NODE * CHUNK_SIZE);
-  await verifyLayer(await expectedRoot(bytes), bytes);
-});
+// The published layers span at most four chunks, so the layout past them is checked on synthetic
+// files, the deepest with one-byte chunks to keep three levels of 174 links small.
+const ROOTS = [
+  ["the published raw layer", () => rawLayer.bytes],
+  ["the published dag-pb layer", () => dagPbLayer.bytes],
+  ["an empty file", () => new Uint8Array(0)],
+  ["one chunk", () => pseudoRandomBytes(CHUNK_SIZE)],
+  ["two chunks, the second one byte", () => pseudoRandomBytes(CHUNK_SIZE + 1)],
+  ["174 chunks under one node", () => pseudoRandomBytes(LINKS_PER_NODE * CHUNK_SIZE)],
+  ["175 chunks under two nodes", () => pseudoRandomBytes(LINKS_PER_NODE * CHUNK_SIZE + 1)],
+  [
+    "two 128-byte chunks, the smallest two-byte varint",
+    () => pseudoRandomBytes(256),
+    { chunkSize: 128 },
+  ],
+  ["174*174 one-byte chunks", () => pseudoRandomBytes(LINKS_PER_NODE ** 2), { chunkSize: 1 }],
+  ["174*174+1 one-byte chunks", () => pseudoRandomBytes(LINKS_PER_NODE ** 2 + 1), { chunkSize: 1 }],
+];
 
-test("verifyLayer rebuilds a file of 175 chunks as a root over two nodes", async () => {
-  const bytes = pseudoRandomBytes(LINKS_PER_NODE * CHUNK_SIZE + 1);
-  await verifyLayer(await expectedRoot(bytes), bytes);
-});
+for (const [name, makeBytes, layout] of ROOTS) {
+  test(`unixfsFileRoot matches the reference importer for ${name}`, async () => {
+    const bytes = makeBytes();
+    const expected = await importerRoot(bytes, layout);
+
+    const root = await unixfsFileRoot(bytes, layout && { ...layout, linksPerNode: LINKS_PER_NODE });
+
+    assert.equal(root.toString(), expected.toString());
+    assert.ok(equals(root.bytes, expected.bytes));
+    if (!layout) await verifyLayer(expected.toString(), bytes);
+  });
+}
 
 test("verifyLayer refuses a dag-pb wrapper around a single chunk, which ipfs add keeps as the raw leaf", async () => {
-  const bytes = rawLayer.bytes;
-  assert.ok(bytes.length <= CHUNK_SIZE);
-  const leaf = {
-    cid: CID.createV1(RAW, await sha256.digest(bytes)),
-    tsize: bytes.length,
-    filesize: bytes.length,
-  };
-  const wrapped = (await fileNode([leaf])).cid.toString();
-  await assertRefused(wrapped, bytes, /rebuild/);
-});
+  const wrapped = await importer(
+    [{ content: rawLayer.bytes }],
+    { put: async (cid) => cid },
+    { cidVersion: 1, rawLeaves: true, reduceSingleLeafToSelf: false },
+  ).next();
+  assert.equal(wrapped.value.cid.code, DAG_PB);
 
-test("the hand-assembled root agrees with a real published layer", async () => {
-  // Guards the oracle itself: if it cannot reproduce a CID the network serves, it proves nothing.
-  assert.equal(await expectedRoot(dagPbLayer.bytes), dagPbLayer.cid);
+  await assertRefused(wrapped.value.cid.toString(), rawLayer.bytes, /rebuild/);
 });
 
 async function rawCidOf(bytes) {

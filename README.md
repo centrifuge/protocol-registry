@@ -304,10 +304,10 @@ TypeScript finds the types through `types` under `moduleResolution` `node` (`nod
 `moduleResolution: node`, or `nodenext` on TypeScript 5.8 or later; `node16` does not work for a
 CommonJS file.
 
-Installing adds the dependencies of `ipfs-unixfs-importer`, which `verifyLayer` and `layerFromBytes`
-use. A bundler drops them for a consumer that calls neither. Measured at 0.1.0 with esbuild 0.28.1:
-about 60 packages installed; `collectRegistryChain`, `isAncestor` and `flattenRegistryChain` bundle
-to about 2 kB minified, and adding `verifyLayer` or `layerFromBytes` makes it about 88 kB.
+The package has one runtime dependency, `multiformats`; `verifyLayer` rebuilds a dag-pb root with
+its own UnixFS encoder, which a test checks against `ipfs-unixfs-importer`. Measured at 0.1.0 with
+esbuild 0.28.1 for the browser: `collectRegistryChain`, `isAncestor` and `flattenRegistryChain`
+bundle to about 3 kB minified, and adding `verifyLayer` and `layerFromBytes` makes it about 18 kB.
 
 ### Versions
 
@@ -472,7 +472,7 @@ inside the test, never a committed file.
 fails when an export is added, renamed or dropped, and `test/package.test.js` when the package's
 dependencies differ from the root's pins for what `src/core/` imports. `pnpm check:package` imports
 the packed build from outside the repository and asserts what a consumer receives: the exports, the
-shipped files, the types (compiled under `bundler`, `nodenext` and `node10` resolution), verification
+shipped files, the one runtime dependency, the types (compiled under `bundler`, `nodenext` and `node10` resolution), verification
 of real layers, and a `chainSelector` above 2^53 surviving `layerFromBytes`.
 
 `pnpm verify-chain <mainnet|testnet> [--head <cid>]` walks the live chain from the CID the
