@@ -243,7 +243,7 @@ the old ABI cache did and the workflow does.
 
 `@centrifuge/registry-core` is `src/core/index.ts` and the files it imports, built into
 `packages/registry-core/dist/` (JavaScript and declarations, ES modules; on Node 22.12 or later a
-CommonJS file loads it with `require`) and published to GitHub Packages. The Worker does not use the build:
+CommonJS file loads it with `require`) and published to npmjs. The Worker does not use the build:
 it imports `src/core/` by relative path. The exports, by group (their documentation ships as
 `dist/index.d.ts`):
 
@@ -287,34 +287,16 @@ the package's floor, has; on a runtime without it `layerFromBytes` throws.
 
 ### Install
 
-Depend on an exact version, never a range or the `snapshot` tag: `snapshot` names the newest publish
-from `main`, and the commit suffix does not sort by time.
-`<sha7>` below is the first 7 characters of a commit whose publish run succeeded;
-`npm view @centrifuge/registry-core versions --registry https://npm.pkg.github.com` lists what
-exists.
-
-The package is private, like this repository. Reading it needs `NODE_AUTH_TOKEN` set to a classic
-personal access token with `read:packages`, or, in GitHub Actions, the workflow's `GITHUB_TOKEN` with
-`packages: read` once the package's settings grant the consuming repository Actions access (see
-[Setup](#setup)). Either way the consumer's `.npmrc` carries the token line:
-
-```
-//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```bash
+pnpm add --save-exact @centrifuge/registry-core@<version>
 ```
 
-Then resolve the scope and add the dependency in one of two ways:
-
-- Where every `@centrifuge/*` package may come from GitHub Packages, add the `.npmrc` scope line
-  `@centrifuge:registry=https://npm.pkg.github.com`, which routes all of them there, and run
-  `npm install --save-exact @centrifuge/registry-core@0.1.0-sha.<sha7>` (pnpm:
-  `pnpm add --save-exact ...`).
-- Where other `@centrifuge/*` packages come from npmjs, put
-  `"@centrifuge/registry-core": "gh:0.1.0-sha.<sha7>"` in `package.json` and run `pnpm install`.
-  `gh:` is a pnpm alias for GitHub Packages that routes only this package; it needs a recent pnpm, so
-  check that yours accepts it.
+No token or `.npmrc` entry is needed. Every version is published with a provenance attestation
+that ties it to the commit and workflow run that built it; `npm audit signatures` in the consuming
+project checks it.
 
 pnpm's [`minimumReleaseAge`](https://pnpm.io/settings#minimumreleaseage) refuses a version published
-more recently than the configured age. Where it is set, a fresh snapshot needs
+more recently than the configured age. Where it is set, a version released within that age needs
 `@centrifuge/registry-core` in `minimumReleaseAgeExclude`.
 
 TypeScript finds the types through `types` under `moduleResolution` `node` (`node10`), and through
@@ -329,31 +311,30 @@ to about 2 kB minified, and adding `verifyLayer` or `layerFromBytes` makes it ab
 
 ### Versions
 
-Every publish is `<version>-sha.<first 7 characters of the commit>` (`0.1.0-sha.abc1234`), where
-`<version>` is the `version` in `packages/registry-core/package.json`, under the dist-tag
-`snapshot`. The workflow `publish-registry-core.yml` publishes on a push to `main` that touches
-`src/core/`, `packages/registry-core/`, `scripts/build-package.ts`, `scripts/check-package*`,
-`scripts/core-imports.ts`, `LICENSE`, the root `package.json`, `pnpm-lock.yaml` or the workflow itself, and on
-manual dispatch, which publishes only from `main` and exists to re-run a failed publish. It typechecks, tests and runs the smoke check first, and skips a version that
-already exists. A commit whose 7 characters are all digits starting with a zero publishes nothing:
-npm would rename that version, so the workflow fails instead.
+The workflow `publish-registry-core.yml` publishes when a GitHub release is published. It runs in
+the `release` environment, refuses a release whose commit is not on `main` or whose tag is not
+`registry-core-v<version>` for the `version` in `packages/registry-core/package.json`, typechecks,
+tests and runs the smoke check, then runs `npm publish --provenance` and checks that the published
+version carries the attestation. npmjs accepts the publish only from this workflow in that
+environment (trusted publishing), so the repository holds no npm token.
 
 ## Setup
 
 What exists outside this repository, and where it is managed:
 
-| What                                                                                                                    | Where                                                                                        |
-| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                     |
-| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                   |
-| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                |
-| Worker secrets                                                                                                          | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
-| The GitHub App                                                                                                          | GitHub organization settings                                                                 |
-| Which repositories' Actions may read `@centrifuge/registry-core`                                                        | the package's settings on GitHub, Manage Actions access                                      |
+| What                                                                                                                    | Where                                                                                              |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                           |
+| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                         |
+| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                      |
+| Worker secrets                                                                                                          | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password`       |
+| The GitHub App                                                                                                          | GitHub organization settings                                                                       |
+| Who may publish `@centrifuge/registry-core`                                                                             | npmjs, the package's settings, Trusted publishing; GitHub, this repository's `release` environment |
 
-**Package access.** `@centrifuge/registry-core` exists only after the first publish from `main`. A
-package admin then grants Actions access to `centrifuge/event-lake` and `centrifuge/backend` in the
-package's settings (Manage Actions access), and a consumer workflow needs `packages: read`.
+**Package publishing.** The repository's `release` environment allows deployments from `main` and
+from tags matching `registry-core-v*`. On npmjs, `@centrifuge/registry-core` has a trusted publisher:
+GitHub Actions, repository `centrifuge/protocol-registry`, workflow `publish-registry-core.yml`,
+environment `release`. npm records provenance only for a public repository.
 
 The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App

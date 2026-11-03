@@ -1,23 +1,12 @@
 name: Publish registry-core package
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/core/**"
-      - "packages/registry-core/**"
-      - "scripts/build-package.ts"
-      - "scripts/check-package*"
-      - "scripts/core-imports.ts"
-      - "LICENSE"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/publish-registry-core.yml"
-  workflow_dispatch:
+  release:
+    types: [released]
 
 # A publish is never cancelled: a cancelled one can leave a half-written version behind.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 permissions:
@@ -25,53 +14,62 @@ permissions:
 
 jobs:
   publish:
-    name: Publish snapshot to npm.pkg.github.com
-    # Dispatch exists to re-run a failed publish of main; no other ref publishes under the official name.
-    if: github.ref == 'refs/heads/main'
+    name: Publish @centrifuge/registry-core to npmjs
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The package's trusted publisher on npmjs names this workflow file and this environment; a job
+    # outside them gets no publish token.
+    environment: release
     permissions:
       contents: read
-      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
+          registry-url: https://registry.npmjs.org
+      # A release can tag any commit; only one on main publishes.
+      - name: Check the release commit is on main and the tag names the package version
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+          VERSION=$(node -p "require('./packages/registry-core/package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "registry-core-v${VERSION}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not name version ${VERSION}: expected registry-core-v${VERSION}" >&2
+            exit 1
+          fi
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@11.21.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm check:package
       - run: pnpm build:package
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          registry-url: https://npm.pkg.github.com
-          scope: "@centrifuge"
-
-      - name: Publish snapshot
+      - name: Publish
         working-directory: packages/registry-core
-        env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: npm publish --provenance --access public
+
+      - name: Check the provenance attestation
+        working-directory: packages/registry-core
         run: |
           set -euo pipefail
-          BASE_VERSION=$(node -p "require('./package.json').version")
-          VERSION="${BASE_VERSION}-sha.${GITHUB_SHA::7}"
-          if npm view "@centrifuge/registry-core@${VERSION}" version >/dev/null 2>&1; then
-            echo "Version ${VERSION} already published, skipping"
-            exit 0
-          fi
-          npm version "${VERSION}" --no-git-tag-version
-          # npm normalises a version whose sha is all digits with a leading zero to a different one
-          WRITTEN=$(node -p "require('./package.json').version")
-          if [ "${WRITTEN}" != "${VERSION}" ]; then
-            echo "npm wrote version ${WRITTEN}, expected ${VERSION}" >&2
-            exit 1
-          fi
-          npm publish --tag snapshot
-          echo "Published @centrifuge/registry-core@${VERSION}"
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          # The registry can take a moment to show a version it just accepted.
+          for attempt in 1 2 3 4 5 6; do
+            PREDICATE=$(npm view "${NAME}@${VERSION}" dist.attestations.provenance.predicateType 2>/dev/null || true)
+            if [ -n "${PREDICATE}" ]; then
+              echo "${NAME}@${VERSION} carries provenance (${PREDICATE})"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "${NAME}@${VERSION} carries no provenance attestation" >&2
+          exit 1
