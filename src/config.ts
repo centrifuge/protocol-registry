@@ -34,7 +34,6 @@ export function runConfig(env: Env, log: Logger = consoleLogger): RunConfig {
       : null,
     sourceRepo: env.SOURCE_REPO,
     hostnames: hostnames(env),
-    etherscanApiKey: env.ETHERSCAN_API_KEY ?? null,
     pinataJwt: env.PINATA_JWT ?? null,
     log,
   };

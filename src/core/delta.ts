@@ -50,9 +50,9 @@ export function hasContractChanged(
   }
 
   // A blockNumber that differs at the same address means the entry was corrected or redeployed.
-  // A blockNumber env has and the chain never carried counts too: explorer lookups fill these in
-  // after the fact, and requiring both sides to have one meant such a backfill could never reach
-  // the chain — the indexer would keep starting that contract's listener from the chain-level
+  // A blockNumber env has and the chain never carried counts too: earlier layers published contracts
+  // with a null blockNumber, and requiring both sides to have one would mean the number could never
+  // reach the chain — the indexer would keep starting that contract's listener from the chain-level
   // startBlock instead.
   //
   // The reverse is deliberately not a change. Emitting an entry whose blockNumber is null would
