@@ -60,11 +60,11 @@ manual POST /runs                     1. the commit: the PR head, or the release
   does can change what registry.centrifuge.io serves. A pinned layer nothing points at is invisible to
   consumers, which makes `pin` the place to inspect real output before going `live`.
 
-The generator (`src/core/`) is a port of `script/registry/` from protocol-internal at
-[centrifuge/protocol-internal#460](https://github.com/centrifuge/protocol-internal/pull/460), verified
-to produce byte-identical layers and validation reports (see the commit that added it). It has no
-I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags, commits, ABIs and
-explorer data through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
+The generator (`src/core/`) is a port of `script/registry/` from protocol-internal's `live-v3.3`, as
+of [centrifuge/protocol-internal#522](https://github.com/centrifuge/protocol-internal/pull/522),
+verified to produce byte-identical layers and validation reports (see the commits that ported it). It
+has no I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags and ABIs
+through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
 `scripts/generate.ts` runs the same thing locally.
 
 ## Inputs: protocol-internal's env/
@@ -79,11 +79,16 @@ Everything the registry says comes from `env/` on the release branch of
 | `env/<environment>/versions.json`  | people         | which git tag backs a version, for a deployment made before its release was tagged: `{ "tags": { "v3.3": "v3.3.0-rc2" } }`                                 |
 | `env/<environment>/retired.json`   | people         | which contracts are out of use, and the block their listeners end at (see [Retirement](#retirement))                                                       |
 
+A config holds `network`, `adapters` and `contracts`, and every contract records an integer
+`blockNumber`. It records no deployment metadata: a chain's `deployment.startBlock` is the earliest
+`blockNumber` among the contracts its config records, derived when a layer is generated.
+
 A contract's `version` resolves to a git tag (`3` → `v3`, `v3.1` → `v3.1.0`, or the alias), and its
-ABI is built from that tag. An aliased tag must hold the same `src/` (minus `src/spell/`) and
-`src-ir/` as the commit the deployment recorded under `deploymentInfo`: the check compares the two
-source trees, so a wrong alias fails rather than quietly publishing ABIs of other code. Retire an alias
-by re-pointing it at the release tag, never by deleting it: only an aliased version is checked.
+ABI is built from that tag. An alias is the deployment's own account of the source it ran, and nothing
+can check it against what was deployed: deploy, tag that commit, point the alias at the tag. The check
+holds that the tag exists and that every alias redirects a version some contract records. Retire an
+alias by re-pointing it at the release tag, never by deleting it: without the entry, the version
+resolves to the release's own tag, which must not silently claim the candidate's contracts.
 
 ## The published registry
 
@@ -164,7 +169,6 @@ They keep their meaning; none are written any more.
 interface Registry {
   network: "mainnet" | "testnet";
   version: string | null; // vX.Y.Z; null for a patch
-  deploymentInfo: { gitCommit: string }; // the latest deployment commit the configs record
   previousRegistry: { version: string; ipfsHash: string } | null; // null for a full snapshot
   abis: { [artifactName: string]: AbiItem[] }; // ABIs of the contracts this layer carries
   chains: { [chainId: string]: ChainConfig }; // only chains this layer changes
@@ -183,12 +187,16 @@ interface ChainConfig {
   retired?: {
     [lowercaseAddress: string]: { contract: string; blockNumber?: number; endBlock: number };
   };
-  deployment: { deployedAt: number | null; startBlock: number | null };
+  deployment: { startBlock: number | null }; // the earliest blockNumber the chain's config records
 }
 ```
 
+Layers published before configs stopped recording deployment metadata also carry
+`deploymentInfo: { gitCommit }` and `deployment.deployedAt`.
+
 ABIs are keyed by artifact name: a contract key capitalized, with a few aliases (`token` →
-`ShareToken`, `fullRestrictionsHook` → `FullRestrictions`, see `src/core/abi-names.ts`), and a factory
+`ShareToken`, `fullRestrictionsHook` → `FullRestrictions`, `layerZeroStandby` → `StandbyAdapter`,
+`layerZeroStandbyUnderlying` → `LayerZeroAdapter`, see `src/core/abi-names.ts`), and a factory
 also ships its product (`tokenFactory` → `TokenFactory` + `ShareToken`).
 
 ### Checks on every layer
@@ -201,13 +209,13 @@ contract.
 
 Delta invariants (`src/core/invariants.ts`), against the published chain:
 
-| Invariant                                                                  | Severity | Catches                                                                                               |
-| -------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------- |
-| Projection: chain + layer reproduces every env contract, address and block | error    | an omitted change, an invented address. A published contract env no longer lists is kept and reported |
-| Retirements: each closes a published address env does not list, once       | error    | ending a current contract, an address never published, restating a retirement                         |
-| Minimality: no entry restates the published address and block              | error    | a delta inflated toward a snapshot                                                                    |
-| ABI coverage: every live contract has an ABI somewhere in the chain        | error    | a contract no indexer can decode                                                                      |
-| Size: the layer carries over 30% of published contracts                    | warning  | the symptom a human notices first                                                                     |
+| Invariant                                                                  | Severity | Catches                                                                                                                              |
+| -------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Projection: chain + layer reproduces every env contract, address and block | error    | an omitted change, an invented address. A published contract env no longer lists is kept and listed in the preview, not warned about |
+| Retirements: each closes a published address env does not list, once       | error    | ending a current contract, an address never published, restating a retirement                                                        |
+| Minimality: no entry restates the published address and block              | error    | a delta inflated toward a snapshot                                                                                                   |
+| ABI coverage: every live contract has an ABI somewhere in the chain        | error    | a contract no indexer can decode                                                                                                     |
+| Size: the layer carries over 30% of published contracts                    | warning  | the symptom a human notices first                                                                                                    |
 
 An unchanged contract whose ABI the chain never carried is re-emitted to ship it: a gap would
 otherwise be permanent, since nothing re-emits an unchanged contract. The minimality check allows that
@@ -336,7 +344,6 @@ Where the Worker differs from the scripts it replaces:
 - The tip is read by CID from the hostname's dnslink and fetched through IPFS, instead of over HTTP
   with the CID resolved separately, so the layer and its `previousRegistry.ipfsHash` always agree.
 - A publish refuses when the hostname moved while it ran.
-- Explorer lookups of creation blocks are cached, since they never change.
 
 ## Development
 

@@ -2,18 +2,12 @@
  * Every env contract must record a `version` that resolves to a protocol-internal tag, since that tag
  * is where its ABI is built from.
  *
- * A directory that aliases a version to another tag (`env/<dir>/versions.json`) is held to one thing
- * more: the tag it names must carry the source the deployment actually ran. The alias is what redirects
- * the ABIs of a deployment made before its release was tagged, and nothing else would catch it pointing
- * at the wrong candidate — the addresses stay valid, the ABIs quietly stop describing them. Checked by
- * comparing the source trees of the tag and of the commit the deployment recorded: same `src/`, same
- * ABIs. Since that is the *recorded* commit, it proves the tag matches what the config says was
- * deployed, not what the chain holds.
- *
- * Its scope is the run that registered `root`, the only one that writes `deploymentInfo`: a script that
- * adds contracts to a chain later records their version without touching it, so those contracts resolve
- * through the alias unchecked. A later deploy whose source differs needs its own tag, and a version
- * label of its own to carry it.
+ * A directory may alias a version to another tag (`env/<dir>/versions.json`): that is how the ABIs of
+ * a deployment made before its release was tagged are redirected to the candidate it ran. The alias is
+ * the deployment's own account of its source — a config records no deployment commit to check it
+ * against — so what is held here is that the tag exists and that every alias redirects a version some
+ * contract records. A later deploy from different source needs its own tag, and a version label of its
+ * own to carry it.
  */
 
 import {
@@ -27,31 +21,8 @@ import {
 import { NETWORKS, type EnvConfig, type Network } from "./types.ts";
 import { resolveVersionTag, versionTagCandidates } from "./versions.ts";
 
-/** What a recorded `gitCommit` may look like, so that a tag name cannot pass as one and diff against itself. */
-const COMMIT_SHA = /^[0-9a-f]{7,40}$/;
-
-export type SourceComparison =
-  { checked: true; differing: string[] } | { checked: false; reason: string };
-
 export interface VersionTagDeps {
   tagExists(tag: string): Promise<boolean>;
-  /**
-   * Whether a tag and a commit hold the same ABI-bearing source: `src/` without `src/spell/` (spells
-   * are written on the live branch against a deployed release and never part of a tag), and `src-ir/`.
-   */
-  compareSource(tag: string, commit: string): Promise<SourceComparison>;
-}
-
-/** The commit a deployment recorded for itself, or null where it recorded none. */
-function deploymentCommitOf(chain: EnvConfig): string | null {
-  const info = chain.deploymentInfo;
-  if (!info || typeof info !== "object") return null;
-  const protocol = info["deploy:protocol"]?.gitCommit;
-  if (protocol) return protocol;
-  for (const value of Object.values(info)) {
-    if (value?.gitCommit) return value.gitCommit;
-  }
-  return null;
 }
 
 /** Checks every deployment record under `env/`, published or not: a rev that is later pointed at has to build too. */
@@ -89,11 +60,10 @@ export async function versionTagErrors(tree: EnvTree, deps: VersionTagDeps): Pro
       errors.push((e as Error).message);
       continue;
     }
+    // Every alias this file's contracts actually use, for the "redirects nothing" check below
     if (!usedAliasKeysByDir.has(directory)) usedAliasKeysByDir.set(directory, new Set());
     const usedAliasKeys = usedAliasKeysByDir.get(directory)!;
 
-    // Every alias this file's contracts actually use, resolved once: what the source-tree check is about
-    const aliasedTags = new Map<string, string>();
     for (const [name, data] of Object.entries(chain.contracts || {})) {
       if (typeof data === "string") {
         errors.push(
@@ -113,53 +83,12 @@ export async function versionTagErrors(tree: EnvTree, deps: VersionTagDeps): Pro
         continue;
       }
       try {
-        const tag = await resolveVersionTag(version, aliases, tagExists);
-        if (aliases[version]) {
-          aliasedTags.set(version, tag);
-          usedAliasKeys.add(version);
-        }
+        await resolveVersionTag(version, aliases, tagExists);
+        if (aliases[version]) usedAliasKeys.add(version);
       } catch (e) {
         errors.push(
           `${file} chain ${chainId} (${environment}): contract "${name}" version "${version}" → no git tag. ` +
             `Tried: ${versionTagCandidates(version, aliases).join(", ")}. (${(e as Error).message})`,
-        );
-      }
-    }
-
-    // An alias redirects the ABIs; the tag it names has to hold the source this deployment ran
-    const deploymentCommit = deploymentCommitOf(chain);
-    for (const [version, tag] of aliasedTags) {
-      // Each of these would otherwise keep a wrong alias green, which is the whole of what this checks
-      if (!deploymentCommit) {
-        errors.push(
-          `${file} (${environment}): version "${version}" is aliased to tag "${tag}", but the file records no deploymentInfo gitCommit to check it against`,
-        );
-        continue;
-      }
-      if (!COMMIT_SHA.test(deploymentCommit)) {
-        errors.push(
-          `${file} (${environment}): version "${version}" is aliased to tag "${tag}", but the recorded ` +
-            `deploymentInfo gitCommit "${deploymentCommit}" is not a commit sha — a tag name there would ` +
-            `diff against itself and pass regardless`,
-        );
-        continue;
-      }
-
-      const comparison = await deps.compareSource(tag, deploymentCommit);
-      if (!comparison.checked) {
-        errors.push(
-          `${file} (${environment}): version "${version}" is aliased to tag "${tag}", but ${comparison.reason}`,
-        );
-        continue;
-      }
-      if (comparison.differing.length > 0) {
-        const shown = comparison.differing.slice(0, 5).join(", ");
-        const more =
-          comparison.differing.length > 5 ? `, +${comparison.differing.length - 5} more` : "";
-        errors.push(
-          `${file} (${environment}): version "${version}" is aliased to tag "${tag}", but that tag's ` +
-            `source differs from the deployed commit ${deploymentCommit} (${shown}${more}). Its ABIs ` +
-            `would not describe what is deployed: tag the deployed commit and point the alias at that tag.`,
         );
       }
     }

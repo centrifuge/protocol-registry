@@ -16,8 +16,7 @@ import { NETWORKS, type Network } from "./core/types.ts";
 import { validateRegistry } from "./core/validate.ts";
 import { publishedTags, versionTagErrors } from "./core/version-tags.ts";
 import { r2AbiStore } from "./io/abis.ts";
-import { explorerCreationBlocks } from "./io/explorers.ts";
-import { commitInfo, compareSource, envSnapshot, tagExists, type GitHub } from "./io/github.ts";
+import { commitInfo, envSnapshot, tagExists, type GitHub } from "./io/github.ts";
 import { dnslinkCid, pinLayer, type Web3Gateway } from "./io/publish.ts";
 import { contractsInLayer, retiredRows, type NetworkOutcome } from "./report.ts";
 
@@ -28,7 +27,6 @@ export interface RunConfig {
   gateway: Web3Gateway | null;
   sourceRepo: string;
   hostnames: Record<Network, string>;
-  etherscanApiKey: string | null;
   /** Null unless the Worker holds a Pinata JWT, which PUBLISH_MODE pin and live need. */
   pinataJwt: string | null;
   log: Logger;
@@ -128,12 +126,7 @@ export async function checkEnv(config: RunConfig, tree: EnvTree): Promise<string
   const problems = schema.files.flatMap(({ file, errors }) =>
     errors.map((error) => `env/${file}: ${error}`),
   );
-  problems.push(
-    ...(await versionTagErrors(tree, {
-      tagExists: cachedTagExists(config),
-      compareSource: (tag, commit) => compareSource(config.gh, config.sourceRepo, tag, commit),
-    })),
-  );
+  problems.push(...(await versionTagErrors(tree, { tagExists: cachedTagExists(config) })));
   return problems;
 }
 
@@ -200,10 +193,8 @@ export async function generateNetwork(
       },
       {
         log: config.log,
-        creationBlock: cachedCreationBlocks(config),
         tagExists: cachedTagExists(config),
         abiAt: (tag, name) => store.abi(tag, name),
-        commitInfo: (ref) => commitInfo(config.gh, config.sourceRepo, ref),
       },
     );
 
@@ -246,22 +237,6 @@ export async function generateNetwork(
   }
 }
 
-/** Explorer lookups, remembered: a contract's creation block never changes. */
-function cachedCreationBlocks(config: RunConfig) {
-  const lookup = explorerCreationBlocks({
-    etherscanApiKey: config.etherscanApiKey,
-    log: (message) => config.log.info(message),
-  });
-  return async (chainId: number, address: string) => {
-    const key = `explorer/${chainId}/${address.toLowerCase()}`;
-    const cached = await config.bucket.get(key);
-    if (cached) return Number(await cached.text());
-    const block = await lookup(chainId, address);
-    if (block) await config.bucket.put(key, String(block));
-    return block;
-  };
-}
-
 /** Thrown when the hostname no longer serves the tip a layer was built on. */
 export class TipMovedError extends Error {
   constructor(network: Network, expected: string | null, actual: string | null) {
@@ -289,14 +264,10 @@ export async function pinNetwork(
   const stored = await config.bucket.get(runKey(runId, `registry-${outcome.network}.json`));
   if (!stored) throw new Error(`run ${runId} has no generated ${outcome.network} registry`);
   const text = await stored.text();
-  const layer = JSON.parse(text) as {
-    version?: string | null;
-    deploymentInfo?: { gitCommit?: string };
-  };
+  const layer = JSON.parse(text) as { version?: string | null };
   if (!config.pinataJwt) throw new Error("PINATA_JWT is not set");
   const { cid } = await pinLayer(config.pinataJwt, outcome.network, text, {
     version: layer.version ?? null,
-    gitCommit: layer.deploymentInfo?.gitCommit ?? null,
     sha,
   });
   return cid;
