@@ -21,6 +21,10 @@ carry a copy of. Its layer reading and verification are also published as the pa
 - [Moving off protocol-internal's pipeline](#moving-off-protocol-internals-pipeline)
 - [Development](#development)
 
+The [docs](docs/) go further: [how the registry works](docs/how-it-works.md), end to end; [the
+registry format](docs/registry-format.md): schema, deltas, retirement and every check; and
+[operations](docs/operations.md): previews, publishes, local runs and auditing.
+
 ## How it works
 
 ```
