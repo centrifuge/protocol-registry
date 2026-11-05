@@ -35,7 +35,7 @@
     // the layer to IPFS, where nothing reads it; "live" also points the registry hostname at it.
     // Any other value is shadow. pin needs PINATA_JWT, live also CLOUDFLARE_API_TOKEN: until then
     // the Worker does not hold them, so it cannot change what the hostnames serve.
-    "PUBLISH_MODE": "pin",
+    "PUBLISH_MODE": "live",
     "MAINNET_HOSTNAME": "registry.centrifuge.io",
     "TESTNET_HOSTNAME": "registry.testnet.centrifuge.io",
     // centrifuge.io, where both hostnames live
