@@ -15,7 +15,6 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { resolveTxt } from "node:dns/promises";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { parseArgs } from "node:util";
@@ -24,14 +23,10 @@ import { isReadEnvPath, type EnvTree } from "../src/core/env.ts";
 import { generateRegistry, type Logger, type RegistryMode } from "../src/core/generate.ts";
 import { validateRegistry } from "../src/core/validate.ts";
 import { NETWORKS, type Network } from "../src/core/types.ts";
-import { fetchRegistryFromIpfs, slimLayer, type LayerCache } from "../src/io/ipfs.ts";
-import { collectRegistryChain } from "../src/core/chain.ts";
+import { fetchRegistryFromIpfs, type LayerCache } from "../src/io/ipfs.ts";
+import { collectRegistryChain, slimLayer } from "../src/core/chain.ts";
 import { abiBundles, wranglerObject } from "./abi-bundles.ts";
-
-const HOSTNAMES: Record<Network, string> = {
-  mainnet: "registry.centrifuge.io",
-  testnet: "registry.testnet.centrifuge.io",
-};
+import { HOSTNAMES, liveCid } from "./live-cid.ts";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -87,14 +82,6 @@ function directoryCache(dir: string): LayerCache {
       writeFileSync(join(dir, `${cid}.json`), text);
     },
   };
-}
-
-async function liveCid(hostname: string): Promise<string | null> {
-  for (const record of await resolveTxt(`_dnslink.${hostname}`)) {
-    const match = record.join("").match(/^dnslink=\/ipfs\/(.+)$/);
-    if (match) return match[1];
-  }
-  return null;
 }
 
 function git(...args: string[]): string | null {

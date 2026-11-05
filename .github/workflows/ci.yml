@@ -34,3 +34,6 @@ jobs:
       # Bundles the Worker and checks wrangler.jsonc, without deploying
       - run: pnpm exec wrangler deploy --dry-run --outdir dist
         if: always()
+      # Packs @centrifuge/registry-core and checks it from a fresh install outside the repository
+      - run: pnpm check:package
+        if: always()

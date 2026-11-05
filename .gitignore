@@ -159,3 +159,6 @@ vite.config.ts.timestamp-*
 # Local generator runs (layer cache, generated registries)
 cache/
 out/
+
+# Copied into the package by scripts/build-package.ts
+packages/registry-core/LICENSE

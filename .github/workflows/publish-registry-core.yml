@@ -1,0 +1,71 @@
+name: Publish registry-core package
+
+on:
+  release:
+    types: [released]
+
+# A publish is never cancelled: a cancelled one can leave a half-written version behind.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish @centrifuge/registry-core to npmjs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The package's trusted publisher on npmjs names this workflow file and this environment; a job
+    # outside them gets no publish token.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      # A release can tag any commit; only one on main publishes.
+      - name: Check the release commit is on main and the tag names the package version
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+          VERSION=$(node -p "require('./packages/registry-core/package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "registry-core-v${VERSION}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not name version ${VERSION}: expected registry-core-v${VERSION}" >&2
+            exit 1
+          fi
+      # Staged publishing needs npm 11.15.0 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@11.21.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm check:package
+      - run: pnpm build:package
+
+      # The trusted publisher may only stage: a staged version is not installable until a maintainer
+      # approves it with 2FA, so nothing this job does reaches consumers on its own.
+      - name: Stage
+        working-directory: packages/registry-core
+        run: npm stage publish --provenance --access public
+
+      - name: Say how to approve it
+        working-directory: packages/registry-core
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          {
+            echo "### ${NAME}@${VERSION} is staged"
+            echo "Not installable until a maintainer approves it with 2FA: npmjs.com, the package's Staged Packages tab,"
+            echo "or \`npm stage list ${NAME}\` then \`npm stage approve <stage-id>\`. After approval, check its provenance:"
+            echo "\`npm view ${NAME}@${VERSION} dist.attestations.provenance.predicateType\`."
+          } >> "$GITHUB_STEP_SUMMARY"
