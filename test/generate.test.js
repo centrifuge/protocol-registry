@@ -66,3 +66,47 @@ test("a contract env records without a block number refuses generation", async (
       error instanceof RefusedError && /spoke has no numeric blockNumber/.test(error.message),
   );
 });
+
+// Layers written since protocol-internal#430 carry no deploymentInfo, so a null-version patch tip
+// names no version at all
+function withoutDeploymentInfo(doc) {
+  delete doc.deploymentInfo;
+  return doc;
+}
+
+for (const [mode, link] of [
+  ["delta", { version: "v3.3.0", ipfsHash: "bafytip" }],
+  ["patch", { version: "v3.3.0", ipfsHash: "bafytip" }],
+  ["full", null],
+]) {
+  test(`a ${mode} layer on a null-version patch tip links ${link ? "to its CID" : "to nothing"}`, async () => {
+    const base = withoutDeploymentInfo(
+      layer({
+        version: "v3.3.0",
+        previousRegistry: null,
+        chains: { 1: { contracts: { hub: { address: HUB, blockNumber: 100, txHash: null } } } },
+      }),
+    );
+    base.abis = { Hub: [] };
+    const tip = withoutDeploymentInfo(
+      layer({ version: null, previousCid: "bafybase", previousVersion: "v3.3.0", chains: {} }),
+    );
+    const env = envOf({
+      hub: { address: HUB, blockNumber: 100, version: "v3.3.0" },
+      spoke: { address: SPOKE, blockNumber: 200, version: "v3.3.0" },
+    });
+
+    const { registry } = await generateRegistry(
+      {
+        network: "mainnet",
+        env,
+        tip: { cid: "bafytip", layer: tip },
+        fetchLayer: async (cid) => (cid === "bafybase" ? base : null),
+        mode,
+      },
+      deps,
+    );
+
+    assert.deepEqual(registry.previousRegistry, link);
+  });
+}

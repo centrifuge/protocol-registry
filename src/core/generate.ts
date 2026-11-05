@@ -273,6 +273,19 @@ async function packAbis(
   return { abis, missing };
 }
 
+/**
+ * The version a link to the tip carries: the newest one the walked chain names, so a null-version
+ * patch tip is labelled with the version api-v3 folds it into. Null only on a partial chain that
+ * read no labelled layer.
+ */
+function newestLabel(layers: Layer[]): string | null {
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const label = layers[i]?.version || layers[i]?.deploymentInfo?.gitCommit;
+    if (label) return label;
+  }
+  return null;
+}
+
 /** Drops per-contract `version`: it is only needed to pick ABIs, and keeps the published layers smaller. */
 function stripContractVersions(chains: Record<string, LayerChain>): void {
   for (const chain of Object.values(chains)) {
@@ -332,8 +345,7 @@ export async function generateRegistry(
         true,
       );
     }
-    previousVersion = tip.layer.version || tip.layer.deploymentInfo?.gitCommit || null;
-    log.info(`  ✓ Tip ${tip.cid}, version ${previousVersion || "unknown"}`);
+    log.info(`  ✓ Tip ${tip.cid}, version ${tip.layer.version || "null (patch layer)"}`);
 
     // Compare against the accumulated state of the whole published chain, not just the tip. Each
     // layer only carries what changed in that publish, so the tip alone would make every contract it
@@ -368,6 +380,7 @@ export async function generateRegistry(
     publishedLayers = collected.layers;
     publishedRetired = flattenRetired(collected.layers);
     walked = collected;
+    previousVersion = newestLabel(collected.layers);
     const summary = summarizeAccumulatedState(accumulated);
     log.info(
       `  ✓ Accumulated state from ${collected.layers.length} layer(s): ${summary.contracts} contracts ` +
@@ -639,8 +652,9 @@ export async function generateRegistry(
   const registry: Layer = {
     network,
     version: effectiveMode === "patch" ? null : resolvedVersion || null,
-    previousRegistry:
-      !fullMode && previousVersion ? { version: previousVersion, ipfsHash: tip!.cid } : null,
+    // Outside full mode a layer always links to the tip's CID, also when the tip is a null-version
+    // patch: keyed on the version, the next layer after one would be an orphan
+    previousRegistry: fullMode ? null : { version: previousVersion, ipfsHash: tip!.cid },
     chains,
   };
 
