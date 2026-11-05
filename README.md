@@ -327,28 +327,34 @@ by a GitHub release; a push to `main` publishes nothing.
 
 The workflow `publish-registry-core.yml` publishes when a GitHub release is published. It runs in
 the `release` environment, refuses a release whose commit is not on `main` or whose tag is not
-`registry-core-v<version>`, typechecks, tests and runs the smoke check, then runs
-`npm publish --provenance` and checks that the published version carries the attestation. npmjs
-accepts the publish only from this workflow in that environment (trusted publishing), so the
-repository holds no npm token.
+`registry-core-v<version>`, typechecks, tests and runs the smoke check, then stages the version
+with `npm stage publish --provenance`. A staged version is not installable until a maintainer approves
+it with 2FA, on npmjs.com under the package's Staged Packages tab or with `npm stage approve
+<stage-id>`, and then checks its provenance with `npm view @centrifuge/registry-core@<version>
+dist.attestations`. npmjs accepts the stage only from this workflow in that environment (trusted
+publishing), the trusted publisher may not run `npm publish`, and the package refuses tokens that
+bypass 2FA: every version needs a maintainer's 2FA, and the repository holds no npm token.
 
 ## Setup
 
 What exists outside this repository, and where it is managed:
 
-| What                                                                                                                    | Where                                                                                              |
-| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                           |
-| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                         |
-| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                      |
-| Worker secrets                                                                                                          | 1Password, Environment "protocol-registry Worker"; see `scripts/push-secrets.sh`                   |
-| The GitHub App                                                                                                          | GitHub organization settings                                                                       |
-| Who may publish `@centrifuge/registry-core`                                                                             | npmjs, the package's settings, Trusted publishing; GitHub, this repository's `release` environment |
+| What                                                                                                                    | Where                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                                                                                                      |
+| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                                                                                                    |
+| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                                                                                                 |
+| Worker secrets                                                                                                          | 1Password, Environment "protocol-registry Worker"; see `scripts/push-secrets.sh`                                                                                              |
+| The GitHub App                                                                                                          | GitHub organization settings                                                                                                                                                  |
+| Who may publish `@centrifuge/registry-core`                                                                             | npmjs, the package's settings: Trusted publishing (stage only) and Publishing access (2FA, no bypass tokens); GitHub, this repository's `release` environment and tag ruleset |
 
-**Package publishing.** The repository's `release` environment allows deployments from `main` and
-from tags matching `registry-core-v*`. On npmjs, `@centrifuge/registry-core` has a trusted publisher:
+**Package publishing.** The repository's `release` environment allows deployments only from tags
+matching `registry-core-v*`, and the ruleset "registry-core release tags" lets only repository admins
+create, move or delete those tags. On npmjs, `@centrifuge/registry-core` has a trusted publisher:
 GitHub Actions, repository `centrifuge/protocol-registry`, workflow `publish-registry-core.yml`,
-environment `release`. npm records provenance only for a public repository.
+environment `release`, allowed to stage and not to publish. Its Publishing access requires
+two-factor authentication and disallows tokens that bypass it. npm records provenance only for a
+public repository.
 
 The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App

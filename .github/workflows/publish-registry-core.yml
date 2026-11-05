@@ -44,7 +44,7 @@ jobs:
             echo "tag ${GITHUB_REF_NAME} does not name version ${VERSION}: expected registry-core-v${VERSION}" >&2
             exit 1
           fi
-      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      # Staged publishing needs npm 11.15.0 or later; Node 22 ships npm 10.
       - run: npm install -g npm@11.21.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
@@ -52,24 +52,20 @@ jobs:
       - run: pnpm check:package
       - run: pnpm build:package
 
-      - name: Publish
+      # The trusted publisher may only stage: a staged version is not installable until a maintainer
+      # approves it with 2FA, so nothing this job does reaches consumers on its own.
+      - name: Stage
         working-directory: packages/registry-core
-        run: npm publish --provenance --access public
+        run: npm stage publish --provenance --access public
 
-      - name: Check the provenance attestation
+      - name: Say how to approve it
         working-directory: packages/registry-core
         run: |
-          set -euo pipefail
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          # The registry can take a moment to show a version it just accepted.
-          for attempt in 1 2 3 4 5 6; do
-            PREDICATE=$(npm view "${NAME}@${VERSION}" dist.attestations.provenance.predicateType 2>/dev/null || true)
-            if [ -n "${PREDICATE}" ]; then
-              echo "${NAME}@${VERSION} carries provenance (${PREDICATE})"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "${NAME}@${VERSION} carries no provenance attestation" >&2
-          exit 1
+          {
+            echo "### ${NAME}@${VERSION} is staged"
+            echo "Not installable until a maintainer approves it with 2FA: npmjs.com, the package's Staged Packages tab,"
+            echo "or \`npm stage list ${NAME}\` then \`npm stage approve <stage-id>\`. After approval, check its provenance:"
+            echo "\`npm view ${NAME}@${VERSION} dist.attestations.provenance.predicateType\`."
+          } >> "$GITHUB_STEP_SUMMARY"
