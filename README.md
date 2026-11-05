@@ -208,13 +208,13 @@ contract.
 
 Delta invariants (`src/core/invariants.ts`), against the published chain:
 
-| Invariant                                                                  | Severity | Catches                                                                                               |
-| -------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------- |
-| Projection: chain + layer reproduces every env contract, address and block | error    | an omitted change, an invented address. A published contract env no longer lists is kept and reported |
-| Retirements: each closes a published address env does not list, once       | error    | ending a current contract, an address never published, restating a retirement                         |
-| Minimality: no entry restates the published address and block              | error    | a delta inflated toward a snapshot                                                                    |
-| ABI coverage: every live contract has an ABI somewhere in the chain        | error    | a contract no indexer can decode                                                                      |
-| Size: the layer carries over 30% of published contracts                    | warning  | the symptom a human notices first                                                                     |
+| Invariant                                                                  | Severity | Catches                                                                                                                              |
+| -------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Projection: chain + layer reproduces every env contract, address and block | error    | an omitted change, an invented address. A published contract env no longer lists is kept and listed in the preview, not warned about |
+| Retirements: each closes a published address env does not list, once       | error    | ending a current contract, an address never published, restating a retirement                                                        |
+| Minimality: no entry restates the published address and block              | error    | a delta inflated toward a snapshot                                                                                                   |
+| ABI coverage: every live contract has an ABI somewhere in the chain        | error    | a contract no indexer can decode                                                                                                     |
+| Size: the layer carries over 30% of published contracts                    | warning  | the symptom a human notices first                                                                                                    |
 
 An unchanged contract whose ABI the chain never carried is re-emitted to ship it: a gap would
 otherwise be permanent, since nothing re-emits an unchanged contract. The minimality check allows that

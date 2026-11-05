@@ -15,6 +15,9 @@
  *   - abis: an entry for every active contract (artifactNamesForContractKey, as packing uses)
  *
  * Old tombstones (`address: null`) skip the address, blockNumber and ABI checks.
+ *
+ * A delta with zero chains is not an error or a warning: it is what a run with nothing to publish
+ * produces, and `summary.publishable` is false for it.
  */
 
 import { artifactNamesForContractKey } from "./abi-names.ts";
@@ -104,9 +107,6 @@ export function validateRegistry({
   // --- chains ---
   const chains = registry.chains || {};
   const chainIds = Object.keys(chains);
-  if (chainIds.length === 0) {
-    warnings.push({ path: "chains", message: "Delta registry has zero chains — nothing changed?" });
-  }
 
   const requiredAbis = new Set<string>();
   let totalContracts = 0;
