@@ -195,7 +195,8 @@ Layers published before configs stopped recording deployment metadata also carry
 `deploymentInfo: { gitCommit }` and `deployment.deployedAt`.
 
 ABIs are keyed by artifact name: a contract key capitalized, with a few aliases (`token` →
-`ShareToken`, `fullRestrictionsHook` → `FullRestrictions`, see `src/core/abi-names.ts`), and a factory
+`ShareToken`, `fullRestrictionsHook` → `FullRestrictions`, `layerZeroStandby` → `StandbyAdapter`,
+`layerZeroStandbyUnderlying` → `LayerZeroAdapter`, see `src/core/abi-names.ts`), and a factory
 also ships its product (`tokenFactory` → `TokenFactory` + `ShareToken`).
 
 ### Checks on every layer
