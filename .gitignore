@@ -153,8 +153,7 @@ vite.config.ts.timestamp-*
 .dev.vars*
 !.dev.vars.example
 
-# The 1Password reference for the Web3 hostnames token: no value (scripts/push-secrets.sh). The
-# Environment the other secrets come from is mounted at .env.secrets, which `.env.*` keeps out.
+# The 1Password reference for the Web3 hostnames token: no value (scripts/push-secrets.sh)
 !.env.1password
 
 # Local generator runs (layer cache, generated registries)

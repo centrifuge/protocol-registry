@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Uploads the Worker's secrets from the "protocol-registry Worker" 1Password Environment, which the
-# 1Password app mounts as a local env file (.env.secrets by default). `op run` loads it into this
-# process's environment only, and the values go to `wrangler secret bulk` on stdin, never to disk or
-# the terminal.
+# Uploads the Worker's secrets from the "protocol-registry Worker" 1Password Environment. `op run
+# --environment` (op 2.41.0 or later) loads it into this process's environment only, and the values
+# go to `wrangler secret bulk` on stdin, never to disk or the terminal.
 #
-#   NODE_SHIMS_MODE=local scripts/push-secrets.sh [--env-file <path>] [<wrangler args>]
+#   NODE_SHIMS_MODE=local scripts/push-secrets.sh --environment <ID> [<wrangler args>]
+#
+# The ID is in the 1Password app: Developer > View Environments > the Environment > Manage
+# environment > Copy environment ID. REGISTRY_OP_ENVIRONMENT can carry it instead of the flag.
 #
 # Which secrets go up follows PUBLISH_MODE in wrangler.jsonc, so the Worker holds no publishing
 # credential before its stage needs it:
@@ -23,25 +25,30 @@ set +x
 
 cd "$(dirname "$0")/.."
 
-env_file=.env.secrets
-if [ "${1:-}" = "--env-file" ]; then
-  env_file=${2:?--env-file needs a path}
+environment=${REGISTRY_OP_ENVIRONMENT:-}
+if [ "${1:-}" = "--environment" ]; then
+  environment=${2:?--environment needs an Environment ID}
   shift 2
+fi
+if [ -z "$environment" ]; then
+  echo "error: name the \"protocol-registry Worker\" 1Password Environment: --environment <ID>" >&2
+  echo "(1Password app: Developer > View Environments > Manage environment > Copy environment ID)" >&2
+  exit 1
 fi
 
 for command in op jq pnpm; do
   command -v "$command" >/dev/null 2>&1 || { echo "error: $command is required" >&2; exit 1; }
 done
 
-if ! { [ -p "$env_file" ] || [ -f "$env_file" ]; }; then
-  echo "error: mount the \"protocol-registry Worker\" 1Password Environment at $env_file" >&2
-  echo "(1Password app: Developer > Environments > Destinations > Local .env file), or pass --env-file" >&2
+op_version=$(op --version)
+if [ "$(printf '%s\n' 2.41.0 "$op_version" | sort -V | head -1)" != 2.41.0 ]; then
+  echo "error: op $op_version cannot read Environments; op run --environment needs 2.41.0 or later" >&2
   exit 1
 fi
 
 mode=$(grep -oE '"PUBLISH_MODE": *"[^"]*"' wrangler.jsonc | sed -E 's/.*"([^"]*)"$/\1/')
 names="GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_WEBHOOK_SECRET SLACK_WEBHOOK_URL MANUAL_TRIGGER_TOKEN"
-sources=(--env-file="$env_file")
+sources=(--environment "$environment")
 case "$mode" in
   pin) names+=" PINATA_JWT" ;;
   live)
@@ -52,7 +59,7 @@ case "$mode" in
   *) mode=shadow ;;
 esac
 
-echo ">>> PUBLISH_MODE is $mode; op run reads $env_file$([ "$mode" = live ] && echo " and .env.1password")" >&2
+echo ">>> PUBLISH_MODE is $mode; op run reads Environment $environment$([ "$mode" = live ] && echo " and .env.1password")" >&2
 echo ">>> and uploads: $names" >&2
 
 # shellcheck disable=SC2016 # the inner script expands in its own shell
