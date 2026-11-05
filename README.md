@@ -244,13 +244,13 @@ the old ABI cache did and the workflow does.
 
 What exists outside this repository, and where it is managed:
 
-| What                                                                                                                    | Where                                                                                        |
-| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                     |
-| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                   |
-| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                |
-| Worker secrets                                                                                                          | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
-| The GitHub App                                                                                                          | GitHub organization settings                                                                 |
+| What                                                                                                                    | Where                                                                            |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`         |
+| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                       |
+| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                    |
+| Worker secrets                                                                                                          | 1Password, Environment "protocol-registry Worker"; see `scripts/push-secrets.sh` |
+| The GitHub App                                                                                                          | GitHub organization settings                                                     |
 
 The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App
@@ -263,21 +263,27 @@ is installed on and protocol-internal's workflows include deploys. Events: Push,
 run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 (`openssl pkcs8 -topk8 -nocrypt -in app.pem`).
 
-**Secrets.** With the 1Password item in place:
-
-```bash
-NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
-```
-
 **Deploy.**
 
 ```bash
 NODE_SHIMS_MODE=local pnpm exec wrangler deploy --profile centrifuge-prod
 ```
 
+**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later:
+
+```bash
+NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
+```
+
+The script uploads only what `PUBLISH_MODE` needs: the GitHub App, Slack and manual-trigger secrets
+in `shadow`, `PINATA_JWT` too in `pin`, and the Web3 hostnames token too in `live`. That token stays
+in the ops-v3 item `.env.1password` references, where its reconciler rotates it.
+
 Variables live in `wrangler.jsonc`; changing one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
-the cutover) is a commit and a deploy. `.env.1password` leaves the publishing credentials commented
-out; uncomment them (and re-run `push-secrets.sh`) for the mode that needs them.
+the cutover) is a commit and a deploy. To move `PUBLISH_MODE` up, change it, run `push-secrets.sh`
+(it reads the mode from `wrangler.jsonc`), then deploy: the Worker holds the new credential before
+the mode that uses it. Only the first deploy comes before the secrets, so there is a Worker to hold
+them.
 
 ## Operations
 
@@ -323,8 +329,8 @@ Worker taking the place of re-enabling `registry.yml` on `live-v3.3`.
 
 1. Merge #460 into `live-v3.3`; its `generate` job stays disabled.
 2. ops-v3: the R2 bucket and the R2 token. protocol-internal: `build-abis.yml`, then a dispatch for
-   every existing release tag. Create the GitHub App and the 1Password item, push the secrets, deploy
-   with `PUBLISH_MODE: "shadow"`.
+   every existing release tag. Create the GitHub App and the 1Password Environment, deploy with
+   `PUBLISH_MODE: "shadow"`, push the secrets.
 3. Shadow period: PRs into `live-v3.3` get previews; publishes post what they would publish. Then
    `pin`, with `PINATA_JWT`: real layers on IPFS,
    compared against what protocol-internal's pipeline would publish, with nothing pointing at them.
