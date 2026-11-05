@@ -268,7 +268,7 @@ run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 **Deploy.**
 
 ```bash
-NODE_SHIMS_MODE=local pnpm exec wrangler deploy --profile centrifuge-prod
+NODE_SHIMS_MODE=local scripts/deploy.sh --profile centrifuge-prod
 ```
 
 **Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later:
