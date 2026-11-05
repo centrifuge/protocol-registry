@@ -5,6 +5,7 @@ import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
+import { toPublish } from "../src/report.ts";
 import { pointHostname, publishMode, TipMovedError } from "../src/run.ts";
 import { route, touchesRegistryInputs } from "../src/webhook.ts";
 
@@ -265,4 +266,23 @@ test("dnslinkCid reads the CID from the _dnslink TXT record", async () => {
   );
   assert.match(calls[0], /name=_dnslink\.registry\.centrifuge\.io&type=TXT/);
   assert.equal(await dnslinkCid("x", async () => ({ ok: true, json: async () => ({}) })), null);
+});
+
+test("each network publishes on its own outcome: one's errors never hold back the other", () => {
+  const ok = { network: "mainnet", publishable: true, validation: { errors: [] } };
+  const orphan = { network: "testnet", publishable: false, validation: { errors: [{}] } };
+  const refused = { network: "testnet", publishable: false, refused: "tip unreachable" };
+  const unchanged = { network: "testnet", publishable: false, validation: { errors: [] } };
+
+  for (const [outcomes, expected] of [
+    [[ok, orphan], ["mainnet"]],
+    [[ok, refused], ["mainnet"]],
+    [[ok, unchanged], ["mainnet"]],
+    [[orphan], []],
+  ]) {
+    assert.deepEqual(
+      toPublish(outcomes).map((o) => o.network),
+      expected,
+    );
+  }
 });
