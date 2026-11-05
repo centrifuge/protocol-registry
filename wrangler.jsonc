@@ -61,7 +61,7 @@
       "class_name": "RegistryRun",
     },
   ],
-  // Secrets, seeded from 1Password by the ops-v3 operator script (see README.md, "Operations"):
+  // Secrets, uploaded from 1Password by scripts/push-secrets.sh (see README.md, "Setup"):
   //   GITHUB_APP_ID            the App that reads protocol-internal and posts its PR check runs
   //   GITHUB_APP_PRIVATE_KEY   its key in PKCS#8 PEM (`openssl pkcs8 -topk8 -nocrypt -in app.pem`)
   //   GITHUB_WEBHOOK_SECRET    the App's webhook secret
