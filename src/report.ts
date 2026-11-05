@@ -123,6 +123,14 @@ export function hasErrors(outcomes: NetworkOutcome[]): boolean {
   return outcomes.some((o) => o.refused || (o.validation?.errors.length ?? 0) > 0);
 }
 
+/**
+ * The networks a publish goes ahead with. Each is judged on its own outcome: mainnet and testnet are
+ * separate registries, so one's errors never hold back the other.
+ */
+export function toPublish<T extends NetworkOutcome & { publishable: boolean }>(outcomes: T[]): T[] {
+  return outcomes.filter((o) => o.publishable && !hasErrors([o]));
+}
+
 /** One line per network, for a check run title or a Slack headline. */
 export function headline(outcomes: NetworkOutcome[]): string {
   return outcomes

@@ -16,7 +16,7 @@ import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
 import { branchHead, completeCheckRun, type CheckRunOutput } from "./io/github.ts";
 import { notifySlack } from "./io/publish.ts";
-import { hasErrors, headline, previewMarkdown, type NetworkOutcome } from "./report.ts";
+import { hasErrors, headline, previewMarkdown, toPublish, type NetworkOutcome } from "./report.ts";
 import {
   checkEnv,
   missingAbis,
@@ -125,9 +125,9 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
 
       const published: Published[] = [];
       const shadow: Network[] = [];
-      if (params.kind === "publish" && !hasErrors(outcomes)) {
+      if (params.kind === "publish") {
         const mode = publishMode(this.env.PUBLISH_MODE, config);
-        for (const outcome of outcomes.filter((o) => o.publishable)) {
+        for (const outcome of toPublish(outcomes)) {
           if (mode === "shadow") {
             shadow.push(outcome.network);
             continue;
@@ -219,7 +219,12 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
         `:ghost: *${network}*: would publish (PUBLISH_MODE is shadow); the layer is at \`GET /runs/<run>/registry-${network}.json\``,
       );
     }
-    if (failed) lines.push(`:x: *Registry publish refused* — ${title}`);
+    if (failed) {
+      // A network refused beside one published is named, so the message does not read as all refused
+      const refused = outcomes.filter((o) => hasErrors([o])).map((o) => o.network);
+      const which = published.length > 0 || shadow.length > 0 ? ` for ${refused.join(", ")}` : "";
+      lines.push(`:x: *Registry publish refused${which}* — ${title}`);
+    }
 
     // A reconcile that finds nothing to publish is the steady state, and not worth a message. One
     // that would say the same as the last (a refusal nobody acted on yet, a shadow or pinned layer
