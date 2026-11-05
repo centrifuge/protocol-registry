@@ -3,10 +3,11 @@
 # --environment` (op 2.41.0 or later) loads it into this process's environment only, and the values
 # go to `wrangler secret bulk` on stdin, never to disk or the terminal.
 #
-#   NODE_SHIMS_MODE=local scripts/push-secrets.sh --environment <ID> [<wrangler args>]
+#   NODE_SHIMS_MODE=local scripts/push-secrets.sh [--environment <ID>] [<wrangler args>]
 #
-# The ID is in the 1Password app: Developer > View Environments > the Environment > Manage
-# environment > Copy environment ID. REGISTRY_OP_ENVIRONMENT can carry it instead of the flag.
+# The ID defaults to the "protocol-registry Worker" Environment's; --environment or
+# REGISTRY_OP_ENVIRONMENT names another. The 1Password app shows it under Developer > View
+# Environments > Manage environment > Copy environment ID.
 #
 # Which secrets go up follows PUBLISH_MODE in wrangler.jsonc, so the Worker holds no publishing
 # credential before its stage needs it:
@@ -25,15 +26,10 @@ set +x
 
 cd "$(dirname "$0")/.."
 
-environment=${REGISTRY_OP_ENVIRONMENT:-}
+environment=${REGISTRY_OP_ENVIRONMENT:-weyggnasjjxhanfpqpxfpsl6za}
 if [ "${1:-}" = "--environment" ]; then
   environment=${2:?--environment needs an Environment ID}
   shift 2
-fi
-if [ -z "$environment" ]; then
-  echo "error: name the \"protocol-registry Worker\" 1Password Environment: --environment <ID>" >&2
-  echo "(1Password app: Developer > View Environments > Manage environment > Copy environment ID)" >&2
-  exit 1
 fi
 
 for command in op jq pnpm; do

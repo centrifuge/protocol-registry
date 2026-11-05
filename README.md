@@ -261,11 +261,10 @@ run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 NODE_SHIMS_MODE=local pnpm exec wrangler deploy --profile centrifuge-prod
 ```
 
-**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later. Its ID
-is in the 1Password app (Developer > View Environments > Manage environment > Copy environment ID):
+**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later:
 
 ```bash
-NODE_SHIMS_MODE=local scripts/push-secrets.sh --environment <ID> --profile centrifuge-prod
+NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
 ```
 
 The script uploads only what `PUBLISH_MODE` needs: the GitHub App, Slack and manual-trigger secrets
