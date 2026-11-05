@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
-import { appJwt, compareSource, verifyWebhookSignature } from "../src/io/github.ts";
+import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
 import { pointHostname, publishMode, TipMovedError } from "../src/run.ts";
 import { route, touchesRegistryInputs } from "../src/webhook.ts";
@@ -159,86 +159,28 @@ test("the App JWT is RS256-signed by the App key and expires within ten minutes"
   );
 });
 
-/** A GitHub API over a map of git trees, keyed by sha or ref. */
-function fakeTrees(trees) {
-  return async (_method, path) => {
-    const ref = decodeURIComponent(path.split("/git/trees/")[1]);
-    if (!trees[ref]) throw Object.assign(new Error("404"), { status: 404, name: "GitHubError" });
-    return trees[ref];
-  };
-}
-
-test("compareSource compares trees directly, ignoring src/spell", async () => {
-  const root = (src) => ({ sha: `root-${src}`, tree: [{ path: "src", type: "tree", sha: src }] });
-  const gh = fakeTrees({
-    "v3.3.0": root("srcA"),
-    deployed: root("srcB"),
-    srcA: {
-      sha: "srcA",
-      tree: [
-        { path: "core", type: "tree", sha: "c1" },
-        { path: "spell", type: "tree", sha: "s1" },
-      ],
-    },
-    srcB: {
-      sha: "srcB",
-      tree: [
-        { path: "core", type: "tree", sha: "c1" },
-        { path: "spell", type: "tree", sha: "s2" },
-      ],
-    },
-    drifted: root("srcC"),
-    srcC: {
-      sha: "srcC",
-      tree: [
-        { path: "core", type: "tree", sha: "c2" },
-        { path: "spell", type: "tree", sha: "s1" },
-      ],
-    },
-  });
-
-  assert.deepEqual(await compareSource(gh, "r", "v3.3.0", "deployed"), {
-    checked: true,
-    differing: [],
-  });
-  assert.deepEqual(await compareSource(gh, "r", "v3.3.0", "drifted"), {
-    checked: true,
-    differing: ["src/core"],
-  });
-});
-
-test("versionTagErrors holds an aliased tag to the source the deployment recorded", async () => {
-  const config = (version, gitCommit) =>
-    JSON.stringify({
-      network: { chainId: 11155111, environment: "testnet" },
-      contracts: { hub: { address: "0x0000000000000000000000000000000000000001", version } },
-      deploymentInfo: { "deploy:protocol": { gitCommit } },
-    });
+test("versionTagErrors resolves each version through its directory's aliases", async () => {
   const tree = (files) =>
-    envTreeOf({ "testnet/sepolia.json": config("v3.3", "abc1234"), ...files });
-  const deps = (differing) => ({
-    tagExists: async (tag) => ["v3.3.0-rc4", "v3.2.0"].includes(tag),
-    compareSource: async () => ({ checked: true, differing }),
-  });
+    envTreeOf({
+      "testnet/sepolia.json": JSON.stringify({
+        network: { chainId: 11155111, environment: "testnet" },
+        contracts: {
+          hub: { address: "0x0000000000000000000000000000000000000001", version: "v3.3" },
+        },
+      }),
+      ...files,
+    });
+  const deps = { tagExists: async (tag) => ["v3.3.0-rc4", "v3.2.0"].includes(tag) };
   const aliases = (tags) => ({ "testnet/versions.json": JSON.stringify({ tags }) });
 
-  assert.deepEqual(await versionTagErrors(tree(aliases({ "v3.3": "v3.3.0-rc4" })), deps([])), []);
+  assert.deepEqual(await versionTagErrors(tree(aliases({ "v3.3": "v3.3.0-rc4" })), deps), []);
   assert.match(
-    (await versionTagErrors(tree(aliases({ "v3.3": "v3.3.0-rc4" })), deps(["src/core"]))).join(
+    (await versionTagErrors(tree(aliases({ "v3.3": "v3.3.0-rc4", "v3.9": "v3.2.0" })), deps)).join(
       "\n",
     ),
-    /source differs from the deployed commit abc1234 \(src\/core\)/,
-  );
-  assert.match(
-    (
-      await versionTagErrors(tree(aliases({ "v3.3": "v3.3.0-rc4", "v3.9": "v3.2.0" })), deps([]))
-    ).join("\n"),
     /"tags.v3.9" .* redirects nothing/,
   );
-  assert.match(
-    (await versionTagErrors(tree({}), deps([]))).join("\n"),
-    /version "v3.3" → no git tag/,
-  );
+  assert.match((await versionTagErrors(tree({}), deps)).join("\n"), /version "v3.3" → no git tag/);
 });
 
 function fakeGateway(initial) {

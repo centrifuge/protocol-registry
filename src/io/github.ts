@@ -8,7 +8,6 @@
  */
 
 import { isReadEnvPath, type EnvTree } from "../core/env.ts";
-import type { SourceComparison } from "../core/version-tags.ts";
 import type { FetchLike } from "./ipfs.ts";
 
 const API = "https://api.github.com";
@@ -206,51 +205,6 @@ export async function commitInfo(
     if (isNotFound(error)) return null;
     throw error;
   }
-}
-
-async function subtree(gh: GitHub, repo: string, tree: Tree, name: string): Promise<Tree | null> {
-  const entry = tree.tree.find((e) => e.path === name && e.type === "tree");
-  return entry ? gh<Tree>("GET", `/repos/${repo}/git/trees/${entry.sha}`) : null;
-}
-
-/**
- * Compares `src/` (without `src/spell/`) and `src-ir/` between a tag and a commit, tree to tree: the
- * same comparison as `git diff <tag> <commit>`, which the compare API's merge-base diff is not.
- * Reports differing top-level entries.
- */
-export async function compareSource(
-  gh: GitHub,
-  repo: string,
-  tag: string,
-  commit: string,
-): Promise<SourceComparison> {
-  let left: Tree;
-  let right: Tree;
-  try {
-    left = await gh<Tree>("GET", `/repos/${repo}/git/trees/${encodeURIComponent(tag)}`);
-    right = await gh<Tree>("GET", `/repos/${repo}/git/trees/${commit}`);
-  } catch (error) {
-    if (isNotFound(error)) {
-      return { checked: false, reason: `commit ${commit} is not in ${repo} (was it ever pushed?)` };
-    }
-    throw error;
-  }
-
-  const differing: string[] = [];
-  for (const dir of ["src", "src-ir"]) {
-    const a = await subtree(gh, repo, left, dir);
-    const b = await subtree(gh, repo, right, dir);
-    if (a?.sha === b?.sha) continue;
-    const entries = (tree: Tree | null) =>
-      new Map((tree?.tree ?? []).map((entry) => [entry.path, entry.sha]));
-    const ea = entries(a);
-    const eb = entries(b);
-    for (const name of new Set([...ea.keys(), ...eb.keys()])) {
-      if (dir === "src" && name === "spell") continue;
-      if (ea.get(name) !== eb.get(name)) differing.push(`${dir}/${name}`);
-    }
-  }
-  return { checked: true, differing: differing.sort() };
 }
 
 export interface CheckRunOutput {

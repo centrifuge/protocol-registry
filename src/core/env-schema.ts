@@ -3,10 +3,9 @@
  * renames, missing required keys, type mismatches) that would make the generator skip a chain or
  * crash.
  *
- * When any contract has a numeric `blockNumber`, requires `deploymentInfo.*.startBlock` (indexers use
- * it for chain-level block polling), and checks that **every** entry's startBlock is not wildly earlier
- * than the earliest contract deployment block — later deploy batches too, which is what catches an L1
- * block recorded on an L2 chain.
+ * A config holds `network`, `adapters` and `contracts` and nothing else: it records no deployment
+ * metadata, so the chain-level start block the indexer polls from is derived at publish time as the
+ * earliest contract `blockNumber` (./generate.ts), not read from here.
  */
 
 import {
@@ -24,75 +23,13 @@ import { parseJson } from "./json.ts";
 import { declarationErrors } from "./retirements.ts";
 import { NETWORKS, type Network } from "./types.ts";
 
-const KNOWN_TOP_LEVEL_KEYS = new Set(["network", "adapters", "contracts", "deploymentInfo"]);
+const KNOWN_TOP_LEVEL_KEYS = new Set(["network", "adapters", "contracts"]);
 const ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
-// A recorded deployment commit is a sha, short or full. Checked because things downstream diff
-// against it — a tag name or a branch here resolves, and would compare a tag against itself
-const COMMIT_REGEX = /^[0-9a-f]{7,40}$/;
 
 type Json = Record<string, unknown>;
 
 function isObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * Every `deploymentInfo` entry carrying a numeric `startBlock`, in file order.
- *
- * All of them are validated, not just the first (which is what the generator copies into the
- * registry): a later batch's `startBlock` is just as likely to be wrong, and on chains where
- * `block.number` reports the L1 block — Arbitrum — an L1-scale value in a later entry is exactly the
- * mistake this catches.
- */
-function deploymentStartBlocksFromEnv(chain: Json): { key: string; startBlock: number }[] {
-  const info = chain.deploymentInfo;
-  if (!isObject(info)) return [];
-  return Object.entries(info)
-    .filter(([, value]) => isObject(value) && typeof value.startBlock === "number")
-    .map(([key, value]) => ({ key, startBlock: (value as Json).startBlock as number }));
-}
-
-function minActiveContractBlockNumber(contracts: unknown): number | null {
-  if (!isObject(contracts)) return null;
-  let min: number | null = null;
-  for (const contract of Object.values(contracts)) {
-    if (!isObject(contract)) continue;
-    if (contract.address === null) continue;
-    if (typeof contract.blockNumber !== "number") continue;
-    if (min === null || contract.blockNumber < min) min = contract.blockNumber;
-  }
-  return min;
-}
-
-function startBlockGapErrorThreshold(minContractBlock: number): number {
-  return Math.max(5_000_000, Math.floor(minContractBlock * 0.005));
-}
-
-function startBlockGapErrors(
-  envLabel: string,
-  entryKey: string,
-  startBlock: number,
-  contracts: unknown,
-): string[] {
-  const minBlock = minActiveContractBlockNumber(contracts);
-  if (minBlock == null || typeof startBlock !== "number" || !Number.isFinite(startBlock)) {
-    return [];
-  }
-  const gap = minBlock - startBlock;
-  const threshold = startBlockGapErrorThreshold(minBlock);
-  if (gap < threshold) return [];
-  return [
-    `${envLabel} deploymentInfo["${entryKey}"].startBlock: startBlock (${startBlock}) lies far before the earliest active contract deployment (min blockNumber ${minBlock}, gap ${gap} blocks ≥ threshold ${threshold}). ` +
-      `Chain-level block listeners use deployment.startBlock (e.g. hourly snapshots); align it with the deployment record (deploymentInfo.startBlock is the earliest contract blockNumber). ` +
-      `On chains where block.number reports the L1 block (Arbitrum), check this is the L2 block, not the L1 one.`,
-  ];
-}
-
-function hasAnyNumericContractBlockNumber(chain: Json): boolean {
-  if (!isObject(chain.contracts)) return false;
-  return Object.values(chain.contracts).some(
-    (value) => isObject(value) && typeof value.blockNumber === "number",
-  );
 }
 
 /**
@@ -178,68 +115,26 @@ export function validateEnvFile(path: string, raw: string): string[] {
     if (!isObject(chain.contracts)) {
       errors.push('"contracts" must be an object');
     } else {
+      // Every entry carries the block number the deploy script recorded: the registry derives the
+      // chain's start block from them and never asks an explorer for one that is missing
       for (const [name, value] of Object.entries(chain.contracts)) {
-        if (typeof value === "string") {
-          if (!ADDRESS_REGEX.test(value)) {
-            errors.push(`contracts.${name}: invalid address format "${value}"`);
-          }
-        } else if (isObject(value)) {
-          const addr = value.address;
-          if (!addr) {
-            errors.push(`contracts.${name}: missing "address" field`);
-          } else if (!ADDRESS_REGEX.test(String(addr))) {
-            errors.push(`contracts.${name}: invalid address format "${addr}"`);
-          }
-          if (value.blockNumber != null && typeof value.blockNumber !== "number") {
-            errors.push(
-              `contracts.${name}.blockNumber: must be a number, got ${typeof value.blockNumber}`,
-            );
-          }
-        } else {
+        if (!isObject(value)) {
           errors.push(
-            `contracts.${name}: must be an address string or an object with "address", got ${typeof value}`,
+            `contracts.${name}: must be an object with "address" and "blockNumber", got ${typeof value}`,
+          );
+          continue;
+        }
+        const addr = value.address;
+        if (!addr) {
+          errors.push(`contracts.${name}: missing "address" field`);
+        } else if (!ADDRESS_REGEX.test(String(addr))) {
+          errors.push(`contracts.${name}: invalid address format "${addr}"`);
+        }
+        if (typeof value.blockNumber !== "number" || !Number.isInteger(value.blockNumber)) {
+          errors.push(
+            `contracts.${name}.blockNumber: must be an integer, got ${JSON.stringify(value.blockNumber)}`,
           );
         }
-      }
-    }
-  }
-
-  // --- deploymentInfo (optional but validated if present) ---
-  if (chain.deploymentInfo != null) {
-    if (!isObject(chain.deploymentInfo)) {
-      errors.push('"deploymentInfo" must be an object');
-    } else {
-      for (const [key, value] of Object.entries(chain.deploymentInfo)) {
-        if (typeof value !== "object" || value === null) {
-          errors.push(`deploymentInfo.${key}: must be an object`);
-        } else if (
-          (value as Json).startBlock != null &&
-          typeof (value as Json).startBlock !== "number"
-        ) {
-          errors.push(`deploymentInfo.${key}.startBlock: must be a number`);
-        } else if (
-          (value as Json).gitCommit != null &&
-          !COMMIT_REGEX.test(String((value as Json).gitCommit))
-        ) {
-          errors.push(
-            `deploymentInfo.${key}.gitCommit: must be a commit sha, got "${(value as Json).gitCommit}"`,
-          );
-        }
-      }
-    }
-  }
-
-  const envLabel = path.split("/").pop() ?? path;
-  if (hasAnyNumericContractBlockNumber(chain)) {
-    const startBlocks = deploymentStartBlocksFromEnv(chain);
-    if (startBlocks.length === 0) {
-      errors.push(
-        `${envLabel}: missing deploymentInfo.*.startBlock — required when any contract has blockNumber ` +
-          `(indexers use it for chain-level block listeners, e.g. hourly snapshots; see protocol-registry's README)`,
-      );
-    } else {
-      for (const { key, startBlock } of startBlocks) {
-        errors.push(...startBlockGapErrors(envLabel, key, startBlock, chain.contracts || {}));
       }
     }
   }

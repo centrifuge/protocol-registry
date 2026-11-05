@@ -38,7 +38,6 @@ function validConfig(overrides = {}) {
         version: "3",
       },
     },
-    deploymentInfo: { "deploy:protocol": { gitCommit: "7b342982e", startBlock: 22924200 } },
     ...overrides,
   };
 }
@@ -186,23 +185,35 @@ test("validateEnvFile catches a config filed under the wrong environment", () =>
   );
 });
 
-test("validateEnvFile catches a startBlock far before the earliest contract", () => {
-  // An L1 block recorded on an L2 chain is the mistake this exists for.
-  const config = validConfig({
-    deploymentInfo: { "deploy:protocol": { gitCommit: "7b342982e", startBlock: 1000 } },
-  });
-  const errors = validateEnvFile("mainnet/ethereum.json", JSON.stringify(config));
-  assert.match(errors.join("\n"), /lies far before the earliest active contract deployment/);
-});
-
-test("validateEnvFile requires a commit sha as the recorded deployment commit", () => {
-  const config = validConfig({
-    deploymentInfo: { "deploy:protocol": { gitCommit: "v3.3.0", startBlock: 22924200 } },
-  });
+test("validateEnvFile refuses deployment metadata in a config", () => {
+  // The chain's start block is derived from the contracts' blockNumbers, so a deploymentInfo block
+  // would be a second source of truth that nothing reads
+  const config = validConfig({ deploymentInfo: { "deploy:protocol": { startBlock: 22924200 } } });
   assert.match(
     validateEnvFile("mainnet/ethereum.json", JSON.stringify(config)).join("\n"),
-    /must be a commit sha/,
+    /Unknown top-level key "deploymentInfo"/,
   );
+});
+
+test("validateEnvFile requires every contract to record an integer blockNumber", () => {
+  const address = "0x7Ed48C31f2fdC40d37407cBaBf0870B2b688368f";
+  for (const [label, root, expected] of [
+    ["missing", { address, version: "3" }, /contracts.root.blockNumber: must be an integer/],
+    ["a string", { address, blockNumber: "22924235" }, /must be an integer, got "22924235"/],
+    ["fractional", { address, blockNumber: 1.5 }, /must be an integer, got 1.5/],
+    [
+      "a bare address",
+      address,
+      /contracts.root: must be an object with "address" and "blockNumber"/,
+    ],
+  ]) {
+    const config = validConfig({ contracts: { root } });
+    assert.match(
+      validateEnvFile("mainnet/ethereum.json", JSON.stringify(config)).join("\n"),
+      expected,
+      label,
+    );
+  }
 });
 
 test("validateEnvTree reports a malformed retired.json before checking any config", () => {

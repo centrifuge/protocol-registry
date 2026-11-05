@@ -151,10 +151,10 @@ test("a contract dropped from env stays published and is only reported", () => {
   });
 
   assert.deepEqual(errors, []);
+  // Keeping is the normal case: reported in the stats, not raised as a warning
+  assert.deepEqual(warnings, []);
   assert.equal(stats.keptContracts, 1);
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0].message, /not in env and stay published/);
-  assert.match(warnings[0].message, /guardian/);
+  assert.deepEqual(stats.keptByChain, { 1: ["guardian"] });
 });
 
 test("a retired address is not reported as kept", () => {
