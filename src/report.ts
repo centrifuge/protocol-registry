@@ -82,7 +82,22 @@ export function networkMarkdown(outcome: NetworkOutcome): string {
   if (delta?.deltaRatio != null) {
     body += `| Delta size | ${outcome.contractsInLayer ?? 0} of ${delta.accumulatedContracts} published (${Math.round(delta.deltaRatio * 100)}%) |\n`;
   }
+  const kept = delta?.keptContracts ?? 0;
+  if (kept > 0) body += `| Kept as published (not in env, not retired) | ${kept} |\n`;
   body += `| ABIs included | ${validation.summary.abis} |\n\n`;
+
+  if (validation.summary.chains === 0) {
+    body += `Nothing to publish: no contract changed and no retirement is declared, so this layer is not pinned.\n\n`;
+  }
+
+  // Kept is the normal case (a missing key does not retire a contract), so it is listed for review
+  // rather than raised as a warning: it is the set a retired.json declaration would close
+  if (kept > 0) {
+    const rows = Object.entries(delta?.keptByChain ?? {})
+      .map(([chain, names]) => `| ${chain} | ${names.length} | ${names.join(", ")} |`)
+      .join("\n");
+    body += `<details><summary>${kept} published contract(s) kept as published</summary>\n\n| Chain | Count | Contracts |\n|-------|-------|-----------|\n${rows}\n\nA release is retired by declaring it in \`env/<environment>/retired.json\`.\n\n</details>\n\n`;
+  }
 
   // A retirement is reviewed here: every listener the layer closes, by chain, with the block it ends
   // at (a count alone cannot catch a wrong release or a wrong chain)

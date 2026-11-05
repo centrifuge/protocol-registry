@@ -73,14 +73,10 @@ export interface Logger {
 
 export interface GenerateDeps {
   log: Logger;
-  /** A contract's creation block from a block explorer, or null where none answers. */
-  creationBlock(chainId: number, address: string): Promise<number | null>;
   /** Whether protocol-internal has this tag. */
   tagExists(tag: string): Promise<boolean>;
   /** An artifact's ABI as built at a tag, or null when that build has no such artifact. */
   abiAt(tag: string, artifactName: string): Promise<unknown[] | null>;
-  /** A commit's full sha and commit time (Unix seconds), or null when protocol-internal has no such commit. */
-  commitInfo(ref: string): Promise<{ sha: string; timestamp: number } | null>;
 }
 
 /** The published tip the layer is measured against, by CID. */
@@ -126,7 +122,7 @@ export interface Generated {
   summary: GenerateSummary;
   /** The chain the layer was measured against; null for a snapshot with no tip. */
   chain: CollectedChain | null;
-  /** chainId → contracts as generation saw them, explorer backfills included: what validation checks against. */
+  /** chainId → contracts as env records them: what validation checks against. */
   envChains: EnvChains;
 }
 
@@ -142,135 +138,63 @@ export class RefusedError extends Error {
 }
 
 interface ProcessedContract {
-  address: string | null | undefined;
-  blockNumber: number | null;
+  address: string | null;
+  blockNumber: number;
   txHash: null;
   version?: string;
 }
 
 /**
- * Normalizes every env contract into its registry shape, filling a missing blockNumber from the
- * explorers. A filled blockNumber is written back into `chain.contracts`, since the delta below is
- * computed from it: it is what lets a backfilled block reach the chain.
+ * The contracts a config records, in the registry's shape. Every entry has to carry a block number:
+ * the deploy script writes one for everything it registers, and the registry asks no explorer for
+ * what a config leaves out, so a missing one is a config error rather than a lookup to attempt.
  */
-async function processContracts(
-  chain: EnvConfig,
-  deps: GenerateDeps,
-): Promise<Record<string, ProcessedContract>> {
-  const contracts = chain.contracts || {};
-  const processed: Record<string, ProcessedContract> = {};
-  const chainId = chain.network.chainId;
-
-  for (const [contractName, contractData] of Object.entries(contracts)) {
-    const address = addressOf(contractData);
-    const version = typeof contractData === "string" ? undefined : contractData?.version;
-    let blockNumber: number | null =
-      (typeof contractData === "string" ? null : contractData?.blockNumber) || null;
-
-    if (!blockNumber && address) {
-      const fetched = await deps.creationBlock(chainId, address);
-      if (fetched) {
-        blockNumber = fetched;
-        // Rebuilt rather than patched, as the scripts this replaces did: address, blockNumber, version
-        const envContract: ContractEntry = { address, blockNumber };
-        if (version) envContract.version = version;
-        chain.contracts![contractName] = envContract;
-      }
-    }
-
-    // txHash is always null: env no longer records one, and the field stays so the published
-    // schema does not change for consumers
-    processed[contractName] = {
-      address,
-      blockNumber: blockNumber != null ? Number(blockNumber) : null,
-      txHash: null,
-      ...(version && { version }),
-    };
-  }
-
-  return processed;
-}
-
-function normalizeTimestamp(rawTimestamp: unknown): number | null {
-  if (rawTimestamp == null) return null;
-  const tsString = String(rawTimestamp);
-  if (/^\d+$/.test(tsString)) return Number(tsString);
-  const parsed = new Date(tsString);
-  if (Number.isNaN(parsed.valueOf())) return null;
-  return Math.floor(parsed.valueOf() / 1000);
-}
-
-/** `deployment` for a chain entry: when the last deployment finished, and where indexing starts. */
-function getDeploymentMetadata(
+function normalizeContracts(
   chain: EnvConfig,
   networkFile: string,
-  log: Logger,
-): { deployedAt: number | null; startBlock: number | null } {
-  const info = chain.deploymentInfo;
-  let deployedAt: number | null = null;
-  let startBlock: number | null = null;
-  if (info && typeof info === "object") {
-    for (const value of Object.values(info)) {
-      if (!value || typeof value !== "object") continue;
-      const timestamp = normalizeTimestamp(value.timestamp ?? value.deployedAt);
-      if (timestamp) {
-        deployedAt = timestamp;
-        break;
-      }
+): Record<string, ProcessedContract> {
+  const contracts: Record<string, ProcessedContract> = {};
+  const missing: string[] = [];
+  for (const [contractName, contractData] of Object.entries(chain.contracts || {})) {
+    if (
+      !contractData ||
+      typeof contractData !== "object" ||
+      typeof contractData.blockNumber !== "number"
+    ) {
+      missing.push(contractName);
+      continue;
     }
-    for (const value of Object.values(info)) {
-      if (!value || typeof value !== "object") continue;
-      if (value.startBlock != null) {
-        startBlock = Number(value.startBlock);
-        break;
-      }
-    }
+    contracts[contractName] = {
+      address: contractData.address,
+      blockNumber: contractData.blockNumber,
+      // Always null: env no longer records txHash, and the field stays so the published schema does
+      // not change for consumers
+      txHash: null,
+      ...(contractData.version && { version: contractData.version }),
+    };
   }
-  if (!deployedAt && !startBlock) {
-    log.warn(`  ⚠ Chain ${chain.network.chainId} (env/${networkFile}) is missing deploymentInfo`);
+  if (missing.length > 0) {
+    throw new RefusedError(
+      `env/${networkFile}: ${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no numeric blockNumber. ` +
+        `The deploy script records one for every contract it registers; a hand-added entry needs it too.`,
+    );
   }
-  return { deployedAt, startBlock };
-}
-
-function deploymentCommitsOf(chain: EnvConfig): string[] {
-  return Object.values(chain.deploymentInfo || {})
-    .map((value) => value?.gitCommit)
-    .filter((commit): commit is string => Boolean(commit));
+  return contracts;
 }
 
 /**
- * `deploymentInfo.gitCommit`: the most recent of the deployment commits the configs record, by
- * commit time, as a full sha.
+ * The block indexing a chain starts from: the earliest `blockNumber` among its active contracts, over
+ * every contract the config records and not only the ones this layer carries. A config stores no
+ * deployment metadata, so this is derived at publish time rather than copied. Null when no contract
+ * has a block number.
  */
-async function resolveDeploymentCommit(commits: Set<string>, deps: GenerateDeps): Promise<string> {
-  if (commits.size === 0) {
-    throw new RefusedError(`No deploymentInfo.gitCommit found in the published configs`);
+function deriveStartBlock(contracts: Record<string, ProcessedContract>): number | null {
+  let min: number | null = null;
+  for (const data of Object.values(contracts)) {
+    if (data.address === null) continue;
+    if (min === null || data.blockNumber < min) min = data.blockNumber;
   }
-
-  let selected = commits.values().next().value as string;
-  let info = commits.size === 1 ? await deps.commitInfo(selected) : null;
-  if (commits.size > 1) {
-    const known: { sha: string; timestamp: number; recorded: string }[] = [];
-    for (const recorded of commits) {
-      const found = await deps.commitInfo(recorded);
-      if (found) known.push({ ...found, recorded });
-      else deps.log.warn(`Deployment commit "${recorded}" is not in protocol-internal, skipping`);
-    }
-    if (known.length === 0) {
-      throw new RefusedError(`No recorded deployment commit resolves: ${[...commits].join(", ")}`);
-    }
-    known.sort((a, b) => b.timestamp - a.timestamp);
-    selected = known[0].recorded;
-    info = known[0];
-    deps.log.warn(
-      `Multiple deployment commits recorded: ${[...commits].join(", ")}. Using the most recent: ${selected}`,
-    );
-  }
-
-  if (selected.length === 40) return selected;
-  if (info?.sha.length === 40) return info.sha;
-  deps.log.warn(`Could not expand deployment commit "${selected}" to a full sha, using it as is`);
-  return selected;
+  return min;
 }
 
 /**
@@ -504,7 +428,6 @@ export async function generateRegistry(
 
   const chains: Record<string, LayerChain> = {};
   const envChains: EnvChains = {};
-  const deploymentCommits = new Set<string>();
   const versions = new Set<string>();
   let totalChangedContracts = 0;
   let totalKept = 0; // published, live, absent from env: left as published
@@ -542,7 +465,7 @@ export async function generateRegistry(
       cleanedAdapters[adapterName] = adapterFields;
     }
 
-    const allProcessedContracts = await processContracts(chain, deps);
+    const allProcessedContracts = normalizeContracts(chain, networkFile);
     envChains[String(chainId)] = { contracts: chain.contracts || {} };
 
     let processedContracts: Record<string, ProcessedContract> = {};
@@ -642,10 +565,17 @@ export async function generateRegistry(
         contracts: processedContracts as Record<string, ContractEntry>,
         ...(Object.keys(chainRetired).length > 0 && { retired: chainRetired }),
       };
-      chains[chainId].deployment = getDeploymentMetadata(chain, networkFile, log);
+      // Derived from every contract the config records, not only the ones this delta carries: an
+      // indexer starting after the earliest of them misses its history
+      const startBlock = deriveStartBlock(allProcessedContracts);
+      if (startBlock === null) {
+        log.warn(
+          `  ⚠ Chain ${chainId} (env/${networkFile}): no contract has a blockNumber, deployment.startBlock is null`,
+        );
+      }
+      chains[chainId].deployment = { startBlock };
     }
 
-    for (const commit of deploymentCommitsOf(chain)) deploymentCommits.add(commit);
     const chainVersion = getVersionFromChain(chain);
     if (chainVersion) versions.add(chainVersion);
   }
@@ -668,11 +598,12 @@ export async function generateRegistry(
     );
   }
 
-  // Top-level version: max of deploymentInfo labels and per-contract versions (indexer codegen expects it)
+  // Top-level version: max of per-contract versions across every env chain and across the chains
+  // this registry carries (indexer codegen expects it)
   const fromDeploy = maxProtocolVersionLabel([...versions]);
   if (versions.size > 1) {
     log.warn(
-      `⚠ Multiple deploymentInfo versions across chains: ${[...versions].join(", ")}. Using highest: ${fromDeploy}`,
+      `⚠ Multiple protocol versions across chains: ${[...versions].join(", ")}. Using highest: ${fromDeploy}`,
     );
   }
   const fromContracts = deriveHighestContractVersion(chains);
@@ -708,7 +639,6 @@ export async function generateRegistry(
   const registry: Layer = {
     network,
     version: effectiveMode === "patch" ? null : resolvedVersion || null,
-    deploymentInfo: { gitCommit: await resolveDeploymentCommit(deploymentCommits, deps) },
     previousRegistry:
       !fullMode && previousVersion ? { version: previousVersion, ipfsHash: tip!.cid } : null,
     chains,

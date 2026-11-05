@@ -132,6 +132,8 @@ export interface DeltaStats {
   deltaRatio: number | null;
   redundantContracts: number;
   keptContracts: number;
+  /** chainId → the names kept as published though env no longer lists them. */
+  keptByChain: Record<string, string[]>;
   retirements: number;
 }
 
@@ -167,6 +169,7 @@ export function checkDeltaInvariants({
   const projected = project(accumulatedChains, deltaChains);
   const projectedRetired = projectRetired(accumulatedChains, deltaChains);
   let keptContracts = 0;
+  const keptByChain: Record<string, string[]> = {};
   let retirements = 0;
 
   // --- 1. Projection: published state + delta must equal env ---
@@ -205,8 +208,9 @@ export function checkDeltaInvariants({
     }
 
     // Live in the published state but absent from env, and not retired: kept as published. A
-    // missing key is not a retirement (see ./delta.ts), but reviewers should still see what env
-    // stopped listing, since that is the set a declaration would close.
+    // missing key is not a retirement (see ./delta.ts), and keeping is the normal case, so it is
+    // reported rather than warned about; reviewers still see what env stopped listing, since that
+    // is the set a declaration would close.
     const retiredHere = projectedRetired[chainId] || {};
     const kept = Object.entries(projectedContracts)
       .filter(([name, projectedContract]) => {
@@ -217,13 +221,7 @@ export function checkDeltaInvariants({
       .sort();
     if (kept.length > 0) {
       keptContracts += kept.length;
-      warnings.push({
-        path: `chains.${chainId}.contracts`,
-        message:
-          `${kept.length} published contract(s) are not in env and stay published as they are ` +
-          `(a missing key does not retire a contract; a release is retired by declaring it ` +
-          `in env/<environment>/retired.json): ${kept.slice(0, 5).join(", ")}${kept.length > 5 ? ", …" : ""}`,
-      });
+      keptByChain[chainId] = kept;
     }
   }
 
@@ -397,6 +395,7 @@ export function checkDeltaInvariants({
       deltaRatio: deltaRatio === null ? null : Number(deltaRatio.toFixed(4)),
       redundantContracts: redundant,
       keptContracts,
+      keptByChain,
       retirements,
     },
   };

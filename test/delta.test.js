@@ -28,9 +28,9 @@ test("hasContractChanged flags a redeploy at the same address via blockNumber", 
 });
 
 test("hasContractChanged flags a blockNumber env has and the chain never carried", () => {
-  // Explorer lookups fill blockNumbers in after the fact. Requiring both sides to have one meant
-  // the backfill could never reach the chain, leaving the indexer to start that contract's
-  // listener from the chain-level startBlock forever.
+  // Earlier layers published contracts with a null blockNumber. Requiring both sides to have one
+  // would mean env's number could never reach the chain, leaving the indexer to start that
+  // contract's listener from the chain-level startBlock forever.
   const published = chain({ hub: { address: "0xhub", blockNumber: null, txHash: null } });
 
   assert.equal(hasContractChanged("hub", contract("0xhub", 100), published), true);

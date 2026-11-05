@@ -30,13 +30,15 @@ export interface LayerChain {
   adapters?: Record<string, unknown>;
   contracts?: Record<string, ContractEntry>;
   retired?: Record<string, RetiredEntry>;
-  deployment?: { deployedAt: number | null; startBlock: number | null };
+  /** `deployedAt` only on layers published before start blocks were derived from env. */
+  deployment?: { startBlock: number | null; deployedAt?: number | null };
 }
 
 /** One published registry document. */
 export interface Layer {
   network?: string;
   version?: string | null;
+  /** Only on layers published before configs stopped recording deployment metadata. */
   deploymentInfo?: { gitCommit?: string | null };
   previousRegistry?: { version: string | null; ipfsHash: string | null } | null;
   abis?: Record<string, unknown>;
@@ -73,16 +75,6 @@ export interface EnvConfig {
   };
   adapters?: Record<string, Record<string, unknown>>;
   contracts?: Record<string, ContractEntry>;
-  deploymentInfo?: Record<string, DeploymentRecord>;
-}
-
-export interface DeploymentRecord {
-  gitCommit?: string;
-  startBlock?: number;
-  timestamp?: string | number;
-  deployedAt?: string | number;
-  version?: string;
-  [field: string]: unknown;
 }
 
 /** A finding on a generated registry, as the Registry Preview reports it. */

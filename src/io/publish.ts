@@ -19,10 +19,10 @@ export async function pinLayer(
   jwt: string,
   network: Network,
   text: string,
-  meta: { version: string | null; gitCommit: string | null; sha: string },
+  meta: { version: string | null; sha: string },
   fetchImpl: FetchLike = fetch,
 ): Promise<PinResult> {
-  const label = meta.version || meta.gitCommit || "unknown";
+  const label = meta.version || "unknown";
   const name = `registry-${network}-${label}`;
   const form = new FormData();
   form.append("file", new File([text], `${name}.json`, { type: "application/json" }));

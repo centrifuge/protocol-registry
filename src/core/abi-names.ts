@@ -13,6 +13,14 @@ export const ABI_NAME_ALIASES: Record<string, string> = {
   FullRestrictionsHook: "FullRestrictions",
   FreelyTransferableHook: "FreelyTransferable",
   RedemptionRestrictionsHook: "RedemptionRestrictions",
+  LayerZeroStandby: "StandbyAdapter",
+  LayerZeroStandbyUnderlying: "LayerZeroAdapter",
+  AxelarStandby: "StandbyAdapter",
+  AxelarStandbyUnderlying: "AxelarAdapter",
+  ChainlinkStandby: "StandbyAdapter",
+  ChainlinkStandbyUnderlying: "ChainlinkAdapter",
+  HyperlaneStandby: "StandbyAdapter",
+  HyperlaneStandbyUnderlying: "HyperlaneAdapter",
 };
 
 export function capitalize(contractKey: string): string {
