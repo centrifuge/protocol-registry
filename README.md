@@ -236,9 +236,11 @@ gh workflow run build-abis.yml -R centrifuge/protocol-internal -f tag=v3.2.0
 A run that needs a tag without a manifest, or with a manifest from a commit the tag no longer points
 at, waits up to an hour for a build in flight, then fails naming the tag.
 
-`scripts/build-abi-bundle.ts` builds the same bundle from a local forge build, for local runs: where
-two sources define an artifact of the same name, the first in sorted order wins, skipping tests, as
-the old ABI cache did and the workflow does.
+Local runs read the same bundles: `scripts/generate.ts` fetches the artifacts it needs with
+`wrangler r2 object get --remote`, under the operator's wrangler login, and keeps them in
+`cache/abis/<tag>/`. As in the Worker, a tag whose bundle was built from a commit other than the one
+the tag points at in the checkout is refused. Which artifact wins when two sources define the same
+name is therefore decided in one place, the workflow.
 
 ## Setup
 
@@ -310,10 +312,11 @@ curl -s https://<host>/status -H "Authorization: Bearer $TOKEN"
 `allowHistoryDrop`, and for a preview `sha`. A run's layers are at
 `GET /runs/<id>/registry-<network>.json` and `.validation.json`.
 
-**Locally**, with a protocol-internal checkout and a directory of ABI bundles:
+**Locally**, with a protocol-internal checkout (for env and tags) and wrangler access to the bucket
+(`--wrangler-profile` picks an auth profile, as `wrangler --profile` does):
 
 ```bash
-node scripts/generate.ts mainnet --source-repo ../protocol-internal --abis ./abis [--mode full] [--source-cid <cid>]
+node scripts/generate.ts mainnet --source-repo ../protocol-internal --wrangler-profile centrifuge-prod [--mode full] [--source-cid <cid>]
 ```
 
 It writes `out/registry-<network>.json` and its validation report, and publishes nothing.
