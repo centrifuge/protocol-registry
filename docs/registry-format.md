@@ -92,7 +92,7 @@ published contract that is still live and unretired (one `env/` no longer lists)
 carries every published retirement forward. `allowHistoryDrop` overrides the refusal for the one case
 where dropping is the point: `env/registry.json` switching a registry to another deployment, which
 changes every address in it. A snapshot taken while no layer is reachable carries no history and says
-so. While a registry is live, the orphan rule currently refuses any snapshot (see
+so. While a registry is live, only a testnet snapshot passes the orphan rule (see
 [Indexer hard requirements](#indexer-hard-requirements)).
 
 The chosen mode is in the run's report and in the validation report's `summary.mode`.
@@ -317,7 +317,7 @@ contracts (a non-null `address`); old tombstones skip the address, block and ABI
 | Field                                           | Rule                                                                                                                                                                                                      |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `version`                                       | A non-empty string for delta and full layers; `null` for a patch, and only with `previousRegistry.ipfsHash` set.                                                                                          |
-| `previousRegistry.ipfsHash`                     | Set whenever a registry is live for the network: a layer without it would be an orphan. Absent only for a base snapshot.                                                                                  |
+| `previousRegistry.ipfsHash`                     | Set whenever a registry is live for the network: a layer without it would be an orphan. Absent only for a base snapshot, which a live registry allows on testnet alone.                                   |
 | `chains.<chainId>.deployment.startBlock`        | A number.                                                                                                                                                                                                 |
 | `chains.<chainId>.contracts.<name>.address`     | A 20-byte address for every active contract.                                                                                                                                                              |
 | `chains.<chainId>.contracts.<name>.blockNumber` | A number for every active contract; a null block is a warning when the chain has a start block to fall back to.                                                                                           |
@@ -327,12 +327,14 @@ contracts (a non-null `address`); old tombstones skip the address, block and ABI
 `txHash`, `previousRegistry.version` and `adapters` are soft fields. Retired entries carry no ABI:
 the layer that published the address did.
 
-A full snapshot has no `previousRegistry` by design, and the orphan rule makes no exception for it:
-while a registry is live, it refuses a snapshot just as it refuses a layer that lost its link by
-mistake, since a layer records no mode the validator could tell them apart by. protocol-internal's
-pipeline published deliberate snapshots by skipping the live check in its pin job; the Worker never
-skips a check, so **today it cannot publish a full snapshot while a registry is live**. Accepting a
-snapshot the run asked for explicitly is an open follow-up, in this validator and in the run.
+A full snapshot has no `previousRegistry` by design. A layer records no mode, so the validator cannot
+tell a deliberate snapshot from a layer that lost its link by mistake; the run tells it instead
+(`fullSnapshot`, set when the generator built a full snapshot, which it only does when the run asks for
+one). On **testnet**, a snapshot the run asked for passes with a warning that it replaces the published
+chain: testnet is reset from time to time. On **mainnet** it is refused like any unlinked layer, and
+`POST /runs` refuses `"mode": "full"` for mainnet up front: a mainnet reset would strand every consumer
+walking its chain, and is not something a run does. An unlinked layer nobody asked for is an orphan on
+both.
 
 ## Delta invariants
 

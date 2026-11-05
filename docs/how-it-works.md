@@ -173,6 +173,75 @@ Whichever way, a consumer ends a contract's listener at the `endBlock` its `reti
 never infers an end from the next release: pools migrate one by one, so a contract absent from a
 newer layer is in use until it is retired.
 
+## Assumptions
+
+What the system takes for granted, and what breaks when it stops being true.
+
+### Inputs
+
+- **`env/` on the release branch is the record of what is deployed.** Deploy scripts write it, and
+  nothing else feeds the registry. A contract that is deployed but not recorded is not published; a
+  config edited by hand is published as written.
+- **One release branch publishes.** `SOURCE_BRANCH` names it. Other live branches publish nothing, and
+  a new release only reaches the registry once `SOURCE_BRANCH` points at it and the Worker is deployed.
+- **Every config entry has an integer `blockNumber`.** The chain's start block is derived from them,
+  and generation refuses an entry without one instead of looking it up.
+- **Every contract `version` resolves to a tag**, directly or through `env/<dir>/versions.json`. An
+  alias is the deployment's own claim that it runs that tag's source: nothing checks it, so it is
+  reviewed like code.
+- **Absence is not retirement.** Retirement is a declaration in `retired.json`. A contract `env/` stops
+  listing stays published, and a release that replaces a contract under a new key must retire the old
+  one, or indexers keep listening to both.
+
+### ABIs
+
+- **A tag's source never changes.** Each tag is built once, and its bundle records the commit. A moved
+  tag is refused until it is rebuilt.
+- **Every tag is built.** `build-abis.yml` runs when a tag is pushed, except for tags pushed with
+  `GITHUB_TOKEN` or more than three at once; those, and tags from before the workflow, are dispatched by
+  hand. Until a tag the configs use is built, every run waits on it and then fails naming it.
+- **An artifact name is unique enough.** Bundles are keyed by artifact name, first one wins across
+  `out/` then `out-ir/`. A collision with a different ABI is a warning in the build, not an error.
+- **A contract key names its artifact.** The key is capitalized (`hub` → `Hub`), with a factory also
+  needing its product. A key that does not map needs an entry in `src/core/abi-names.ts` **in this
+  repository**: a protocol-internal change that adds such a key fails its preview with a missing ABI
+  until it lands here.
+
+### Publishing
+
+- **The Worker is the only publisher.** Nothing else changes the hostnames' DNSLinks. A change made by
+  hand is detected (the hostname no longer serves the CID a layer was built on) and the publish stops;
+  that is the safety, so a manual change must be followed by a run that builds on it.
+- **Generation is deterministic.** The same `env/`, live layer and ABIs give the same bytes, and so the
+  same CID. A layer can be checked before it is published, and a retry pins the same layer.
+- **Pinata's layout stays as it is.** Layers are uploaded through Pinata's public files API, which
+  gives CIDv1, raw leaves, 256 KiB chunks and a balanced DAG of 174 links. `verifyLayer` in
+  `@centrifuge/registry-core` rebuilds CIDs that way; if Pinata changed it, new layers would fail
+  verification.
+- **Every published layer stays pinned.** Consumers walk the chain back to the base snapshot, so every
+  layer must stay retrievable. The Worker caches layers in R2, consumers do not.
+- **Mainnet is never reset.** Its chain only grows. A testnet reset is a full snapshot asked for
+  explicitly; see [registry-format.md](registry-format.md#indexer-hard-requirements).
+
+### Consumers
+
+- **A consumer walks the whole chain and merges it, newest winning.** A null-version patch layer folds
+  into its predecessor. A listener ends at the `endBlock` its `retired` entry gives, never because a
+  contract is absent from a newer layer.
+- **A consumer that pins a head moves it on purpose.** event-lake pins one CID per network and verifies
+  each layer against it, so a publish reaches it only when its pin is bumped. api-v3 reads its
+  `REGISTRY_URL`, which may be a fixed layer rather than the hostname.
+
+### Operations
+
+- **Credentials follow the mode.** The Worker holds only what `PUBLISH_MODE` needs, uploaded by
+  `scripts/push-secrets.sh`. Rotating a secret means running it again. A mode missing its credential
+  fails every publish run rather than doing less.
+- **Deploys are manual,** from a commit on `main`, by someone logged in to the Cloudflare account, with
+  `scripts/deploy.sh`.
+- **The GitHub App stays installed on protocol-internal,** with the webhook secret the Worker holds.
+  Without its events, publishing waits for the six-hourly cron, and previews stop.
+
 ## What lives where
 
 | What                                                        | Where                                                                                                                                                                                                                                                        |

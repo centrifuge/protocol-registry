@@ -62,8 +62,17 @@ Examples of `-d` bodies:
 '{"kind":"preview","networks":["testnet"],"mode":"patch"}'  # force a patch
 ```
 
-A full snapshot is refused while a registry is live (see
-[Indexer hard requirements](registry-format.md#indexer-hard-requirements)).
+A full snapshot resets a network's chain, and only testnet is reset this way: `POST /runs` refuses
+`"mode": "full"` for mainnet, and validation refuses an unlinked mainnet layer while one is live (see
+[Indexer hard requirements](registry-format.md#indexer-hard-requirements)). To reset testnet:
+
+```bash
+curl -sX POST https://<host>/runs -H "Authorization: Bearer $TOKEN" \
+  -d '{"kind":"publish","networks":["testnet"],"mode":"full"}'
+```
+
+Add `"allowHistoryDrop": true` only when the snapshot drops published contracts that are still live on
+purpose, such as a switch to another deployment.
 
 ## Following a run
 
