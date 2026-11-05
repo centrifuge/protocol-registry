@@ -2,12 +2,13 @@
  * Generates and validates a registry layer locally, the way the Worker does, without publishing it.
  *
  *     node scripts/generate.ts <mainnet|testnet> --source-repo <protocol-internal checkout> \
- *       --abis <bundle dir> [--mode auto|delta|patch|full] [--source-cid <cid>] \
+ *       [--wrangler-profile <name>] [--mode auto|delta|patch|full] [--source-cid <cid>] \
  *       [--allow-partial-chain] [--allow-history-drop] [--out out]
  *
- * Env comes from the checkout's working tree, tags and commits from its git, ABIs from a directory in
- * the bundle layout (`<dir>/<tag>/<Artifact>.json`, see scripts/build-abi-bundle.ts). Fetched layers
- * are cached in cache/registry-chain. ETHERSCAN_API_KEY fills blockNumbers env lacks.
+ * Env comes from the checkout's working tree, tags and commits from its git, ABIs from the bundles
+ * protocol-internal's build-abis.yml uploads to R2, read with wrangler under the operator's login (or
+ * the given auth profile) and kept in cache/abis (see scripts/abi-bundles.ts). Fetched layers are
+ * cached in cache/registry-chain. ETHERSCAN_API_KEY fills blockNumbers env lacks.
  *
  * Writes <out>/registry-<network>.json and <out>/registry-<network>.validation.json; exits 1 when
  * generation is refused or validation finds errors.
@@ -26,6 +27,7 @@ import { NETWORKS, type Network } from "../src/core/types.ts";
 import { explorerCreationBlocks } from "../src/io/explorers.ts";
 import { fetchRegistryFromIpfs, slimLayer, type LayerCache } from "../src/io/ipfs.ts";
 import { collectRegistryChain } from "../src/core/chain.ts";
+import { abiBundles, wranglerObject } from "./abi-bundles.ts";
 
 const HOSTNAMES: Record<Network, string> = {
   mainnet: "registry.centrifuge.io",
@@ -36,7 +38,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     "source-repo": { type: "string" },
-    abis: { type: "string" },
+    "wrangler-profile": { type: "string" },
     mode: { type: "string", default: "auto" },
     "source-cid": { type: "string" },
     "allow-partial-chain": { type: "boolean", default: false },
@@ -47,10 +49,9 @@ const { values, positionals } = parseArgs({
 
 const network = positionals[0] as Network;
 const repo = values["source-repo"];
-const abiDir = values.abis;
-if (!NETWORKS.includes(network) || !repo || !abiDir) {
+if (!NETWORKS.includes(network) || !repo) {
   console.error(
-    "usage: node scripts/generate.ts <mainnet|testnet> --source-repo <checkout> --abis <dir> [options]",
+    "usage: node scripts/generate.ts <mainnet|testnet> --source-repo <checkout> [options]",
   );
   process.exit(2);
 }
@@ -122,6 +123,12 @@ const tip = tipCid
   ? { cid: tipCid, layer: await fetchRegistryFromIpfs(tipCid, { cache }).catch(() => null) }
   : null;
 
+const abiAt = abiBundles({
+  dir: join("cache", "abis"),
+  tagCommit: (tag) => git("rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`),
+  fetchObject: wranglerObject(values["wrangler-profile"]),
+});
+
 try {
   const generated = await generateRegistry(
     {
@@ -141,10 +148,7 @@ try {
       }),
       tagExists: async (tag) =>
         git("rev-parse", "--verify", "--quiet", `refs/tags/${tag}`) !== null,
-      abiAt: async (tag, name) => {
-        const path = join(abiDir, tag, `${name}.json`);
-        return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
-      },
+      abiAt,
       commitInfo: async (ref) => {
         const out = git("show", "-s", "--format=%H %ct", `${ref}^{commit}`);
         if (!out) return null;
