@@ -77,22 +77,10 @@ function compareVersions(a: string, b: string): number {
 }
 
 /**
- * The version a config records: deploymentInfo's first, else the highest per-contract one
- * (e.g. "v3.1" wins over "3").
+ * The version a config records: the highest per-contract `version` (e.g. "v3.1" wins over "3"), the
+ * only version a config holds.
  */
 export function getVersionFromChain(chain: EnvConfig): string | null {
-  const info = chain.deploymentInfo;
-  if (info && typeof info === "object") {
-    if (info["deploy:protocol"]?.version) {
-      return info["deploy:protocol"].version;
-    }
-    for (const value of Object.values(info)) {
-      if (value?.version) {
-        return value.version;
-      }
-    }
-  }
-
   const contracts = chain.contracts;
   if (contracts && typeof contracts === "object") {
     let highest: string | null = null;
@@ -146,8 +134,8 @@ export function normalizeRegistryVersionToVSemver(label: string | null): string 
 }
 
 /**
- * Max of per-contract `version` across chains (skips tombstones). Used when deploymentInfo has no
- * protocol version — api-v3 `update-registry` expects a top-level version.
+ * Max of per-contract `version` across the chains a registry carries (skips tombstones). api-v3
+ * `update-registry` expects a top-level version.
  */
 export function deriveHighestContractVersion(chains: Record<string, LayerChain>): string | null {
   const labels: string[] = [];

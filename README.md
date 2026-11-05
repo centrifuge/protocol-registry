@@ -60,11 +60,11 @@ manual POST /runs                     1. the commit: the PR head, or the release
   does can change what registry.centrifuge.io serves. A pinned layer nothing points at is invisible to
   consumers, which makes `pin` the place to inspect real output before going `live`.
 
-The generator (`src/core/`) is a port of `script/registry/` from protocol-internal at
-[centrifuge/protocol-internal#460](https://github.com/centrifuge/protocol-internal/pull/460), verified
-to produce byte-identical layers and validation reports (see the commit that added it). It has no
-I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags, commits, ABIs and
-explorer data through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
+The generator (`src/core/`) is a port of `script/registry/` from protocol-internal's `live-v3.3`, as
+of [centrifuge/protocol-internal#522](https://github.com/centrifuge/protocol-internal/pull/522),
+verified to produce byte-identical layers and validation reports (see the commits that ported it). It
+has no I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags and ABIs
+through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
 `scripts/generate.ts` runs the same thing locally.
 
 ## Inputs: protocol-internal's env/
@@ -79,11 +79,16 @@ Everything the registry says comes from `env/` on the release branch of
 | `env/<environment>/versions.json`  | people         | which git tag backs a version, for a deployment made before its release was tagged: `{ "tags": { "v3.3": "v3.3.0-rc2" } }`                                 |
 | `env/<environment>/retired.json`   | people         | which contracts are out of use, and the block their listeners end at (see [Retirement](#retirement))                                                       |
 
+A config holds `network`, `adapters` and `contracts`, and every contract records an integer
+`blockNumber`. It records no deployment metadata: a chain's `deployment.startBlock` is the earliest
+`blockNumber` among the contracts its config records, derived when a layer is generated.
+
 A contract's `version` resolves to a git tag (`3` → `v3`, `v3.1` → `v3.1.0`, or the alias), and its
-ABI is built from that tag. An aliased tag must hold the same `src/` (minus `src/spell/`) and
-`src-ir/` as the commit the deployment recorded under `deploymentInfo`: the check compares the two
-source trees, so a wrong alias fails rather than quietly publishing ABIs of other code. Retire an alias
-by re-pointing it at the release tag, never by deleting it: only an aliased version is checked.
+ABI is built from that tag. An alias is the deployment's own account of the source it ran, and nothing
+can check it against what was deployed: deploy, tag that commit, point the alias at the tag. The check
+holds that the tag exists and that every alias redirects a version some contract records. Retire an
+alias by re-pointing it at the release tag, never by deleting it: without the entry, the version
+resolves to the release's own tag, which must not silently claim the candidate's contracts.
 
 ## The published registry
 
@@ -164,7 +169,6 @@ They keep their meaning; none are written any more.
 interface Registry {
   network: "mainnet" | "testnet";
   version: string | null; // vX.Y.Z; null for a patch
-  deploymentInfo: { gitCommit: string }; // the latest deployment commit the configs record
   previousRegistry: { version: string; ipfsHash: string } | null; // null for a full snapshot
   abis: { [artifactName: string]: AbiItem[] }; // ABIs of the contracts this layer carries
   chains: { [chainId: string]: ChainConfig }; // only chains this layer changes
@@ -183,12 +187,16 @@ interface ChainConfig {
   retired?: {
     [lowercaseAddress: string]: { contract: string; blockNumber?: number; endBlock: number };
   };
-  deployment: { deployedAt: number | null; startBlock: number | null };
+  deployment: { startBlock: number | null }; // the earliest blockNumber the chain's config records
 }
 ```
 
+Layers published before configs stopped recording deployment metadata also carry
+`deploymentInfo: { gitCommit }` and `deployment.deployedAt`.
+
 ABIs are keyed by artifact name: a contract key capitalized, with a few aliases (`token` →
-`ShareToken`, `fullRestrictionsHook` → `FullRestrictions`, see `src/core/abi-names.ts`), and a factory
+`ShareToken`, `fullRestrictionsHook` → `FullRestrictions`, `layerZeroStandby` → `StandbyAdapter`,
+`layerZeroStandbyUnderlying` → `LayerZeroAdapter`, see `src/core/abi-names.ts`), and a factory
 also ships its product (`tokenFactory` → `TokenFactory` + `ShareToken`).
 
 ### Checks on every layer
@@ -201,13 +209,13 @@ contract.
 
 Delta invariants (`src/core/invariants.ts`), against the published chain:
 
-| Invariant                                                                  | Severity | Catches                                                                                               |
-| -------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------- |
-| Projection: chain + layer reproduces every env contract, address and block | error    | an omitted change, an invented address. A published contract env no longer lists is kept and reported |
-| Retirements: each closes a published address env does not list, once       | error    | ending a current contract, an address never published, restating a retirement                         |
-| Minimality: no entry restates the published address and block              | error    | a delta inflated toward a snapshot                                                                    |
-| ABI coverage: every live contract has an ABI somewhere in the chain        | error    | a contract no indexer can decode                                                                      |
-| Size: the layer carries over 30% of published contracts                    | warning  | the symptom a human notices first                                                                     |
+| Invariant                                                                  | Severity | Catches                                                                                                                              |
+| -------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Projection: chain + layer reproduces every env contract, address and block | error    | an omitted change, an invented address. A published contract env no longer lists is kept and listed in the preview, not warned about |
+| Retirements: each closes a published address env does not list, once       | error    | ending a current contract, an address never published, restating a retirement                                                        |
+| Minimality: no entry restates the published address and block              | error    | a delta inflated toward a snapshot                                                                                                   |
+| ABI coverage: every live contract has an ABI somewhere in the chain        | error    | a contract no indexer can decode                                                                                                     |
+| Size: the layer carries over 30% of published contracts                    | warning  | the symptom a human notices first                                                                                                    |
 
 An unchanged contract whose ABI the chain never carried is re-emitted to ship it: a gap would
 otherwise be permanent, since nothing re-emits an unchanged contract. The minimality check allows that
@@ -238,13 +246,13 @@ name is therefore decided in one place, the workflow.
 
 What exists outside this repository, and where it is managed:
 
-| What                                                                                                                    | Where                                                                                        |
-| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                     |
-| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                   |
-| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                |
-| Worker secrets                                                                                                          | 1Password, item "protocol-registry Worker" in `Infrastructure secrets`; see `.env.1password` |
-| The GitHub App                                                                                                          | GitHub organization settings                                                                 |
+| What                                                                                                                    | Where                                                                            |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`         |
+| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                       |
+| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                    |
+| Worker secrets                                                                                                          | 1Password, Environment "protocol-registry Worker"; see `scripts/push-secrets.sh` |
+| The GitHub App                                                                                                          | GitHub organization settings                                                     |
 
 The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App
@@ -257,21 +265,27 @@ is installed on and protocol-internal's workflows include deploys. Events: Push,
 run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 (`openssl pkcs8 -topk8 -nocrypt -in app.pem`).
 
-**Secrets.** With the 1Password item in place:
-
-```bash
-NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
-```
-
 **Deploy.**
 
 ```bash
 NODE_SHIMS_MODE=local pnpm exec wrangler deploy --profile centrifuge-prod
 ```
 
+**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later:
+
+```bash
+NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
+```
+
+The script uploads only what `PUBLISH_MODE` needs: the GitHub App, Slack and manual-trigger secrets
+in `shadow`, `PINATA_JWT` too in `pin`, and the Web3 hostnames token too in `live`. That token stays
+in the ops-v3 item `.env.1password` references, where its reconciler rotates it.
+
 Variables live in `wrangler.jsonc`; changing one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
-the cutover) is a commit and a deploy. `.env.1password` leaves the publishing credentials commented
-out; uncomment them (and re-run `push-secrets.sh`) for the mode that needs them.
+the cutover) is a commit and a deploy. To move `PUBLISH_MODE` up, change it, run `push-secrets.sh`
+(it reads the mode from `wrangler.jsonc`), then deploy: the Worker holds the new credential before
+the mode that uses it. Only the first deploy comes before the secrets, so there is a Worker to hold
+them.
 
 ## Operations
 
@@ -318,8 +332,8 @@ Worker taking the place of re-enabling `registry.yml` on `live-v3.3`.
 
 1. Merge #460 into `live-v3.3`; its `generate` job stays disabled.
 2. ops-v3: the R2 bucket and the R2 token. protocol-internal: `build-abis.yml`, then a dispatch for
-   every existing release tag. Create the GitHub App and the 1Password item, push the secrets, deploy
-   with `PUBLISH_MODE: "shadow"`.
+   every existing release tag. Create the GitHub App and the 1Password Environment, deploy with
+   `PUBLISH_MODE: "shadow"`, push the secrets.
 3. Shadow period: PRs into `live-v3.3` get previews; publishes post what they would publish. Then
    `pin`, with `PINATA_JWT`: real layers on IPFS,
    compared against what protocol-internal's pipeline would publish, with nothing pointing at them.
@@ -339,7 +353,6 @@ Where the Worker differs from the scripts it replaces:
 - The tip is read by CID from the hostname's dnslink and fetched through IPFS, instead of over HTTP
   with the CID resolved separately, so the layer and its `previousRegistry.ipfsHash` always agree.
 - A publish refuses when the hostname moved while it ran.
-- Explorer lookups of creation blocks are cached, since they never change.
 
 ## Development
 

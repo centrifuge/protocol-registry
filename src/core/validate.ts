@@ -6,7 +6,8 @@
  *   - version: a non-empty string, **or** null for a patch layer (`previousRegistry.ipfsHash` set).
  *     api-v3 merges null-version patches into their predecessor, so the base still needs a version.
  *   - previousRegistry.ipfsHash: set whenever a live registry exists for the network
- *   - chains.<id>.deployment.startBlock: a number
+ *   - chains.<id>.deployment.startBlock: a number (generation derives it as the earliest contract
+ *     `blockNumber` the env config records)
  *   - chains.<id>.contracts.<name>.address: a 20-byte hex string for active contracts
  *   - chains.<id>.contracts.<name>.blockNumber: a number for active contracts, unless the chain has a
  *     deployment startBlock (api-v3 falls back to it); then a warning only
@@ -14,6 +15,9 @@
  *   - abis: an entry for every active contract (artifactNamesForContractKey, as packing uses)
  *
  * Old tombstones (`address: null`) skip the address, blockNumber and ABI checks.
+ *
+ * A delta with zero chains is not an error or a warning: it is what a run with nothing to publish
+ * produces, and `summary.publishable` is false for it.
  */
 
 import { artifactNamesForContractKey } from "./abi-names.ts";
@@ -103,9 +107,6 @@ export function validateRegistry({
   // --- chains ---
   const chains = registry.chains || {};
   const chainIds = Object.keys(chains);
-  if (chainIds.length === 0) {
-    warnings.push({ path: "chains", message: "Delta registry has zero chains — nothing changed?" });
-  }
 
   const requiredAbis = new Set<string>();
   let totalContracts = 0;
