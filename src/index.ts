@@ -63,6 +63,10 @@ function manualParams(body: ManualRun): RunParams | string {
   if (body.mode && !["auto", "delta", "patch", "full"].includes(body.mode)) {
     return `mode must be one of auto, delta, patch, full`;
   }
+  // Validation refuses it anyway; saying so here spares a run
+  if (body.mode === "full" && (body.networks ?? NETWORKS).includes("mainnet")) {
+    return `a full snapshot replaces the published chain, which only testnet does: pass "networks": ["testnet"]`;
+  }
   if (body.sourceCid && (!isValidIpfsHash(body.sourceCid) || body.networks?.length !== 1)) {
     return `sourceCid must be a CID, with exactly one network`;
   }

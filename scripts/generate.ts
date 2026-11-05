@@ -147,6 +147,7 @@ try {
     liveTip: liveTip ?? null,
     liveChain,
     envChains: generated.envChains,
+    fullSnapshot: generated.summary.mode === "full",
   });
 
   mkdirSync(values.out!, { recursive: true });

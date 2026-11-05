@@ -5,7 +5,8 @@
  * Hard requirements (errors — break the indexer):
  *   - version: a non-empty string, **or** null for a patch layer (`previousRegistry.ipfsHash` set).
  *     api-v3 merges null-version patches into their predecessor, so the base still needs a version.
- *   - previousRegistry.ipfsHash: set whenever a live registry exists for the network
+ *   - previousRegistry.ipfsHash: set whenever a live registry exists for the network, except in a
+ *     testnet full snapshot the run asked for (a deliberate reset; mainnet is never reset this way)
  *   - chains.<id>.deployment.startBlock: a number (generation derives it as the earliest contract
  *     `blockNumber` the env config records)
  *   - chains.<id>.contracts.<name>.address: a 20-byte hex string for active contracts
@@ -56,6 +57,8 @@ export interface ValidateInput {
   liveChain: CollectedChain | null;
   /** The env this registry was generated from. */
   envChains: EnvChains;
+  /** The run asked for a full snapshot: a deliberate new base registry, not a missing link. */
+  fullSnapshot?: boolean;
 }
 
 export function validateRegistry({
@@ -63,6 +66,7 @@ export function validateRegistry({
   liveTip,
   liveChain,
   envChains,
+  fullSnapshot = false,
 }: ValidateInput): ValidationReport {
   const errors: Finding[] = [];
   const warnings: Finding[] = [];
@@ -97,11 +101,23 @@ export function validateRegistry({
   }
 
   // --- previousRegistry.ipfsHash ---
+  // A layer with no link while a registry is live cuts the published chain off. Only a full snapshot
+  // the run asked for may, and only on testnet, which is reset from time to time; a mainnet reset
+  // would strand every consumer walking its chain, and is not something a run does
   if (liveTip && !registry.previousRegistry?.ipfsHash) {
-    errors.push({
-      path: "previousRegistry.ipfsHash",
-      message: `A live registry exists (version ${liveTip.version}) but this registry has no previousRegistry.ipfsHash — it would be an orphan in the linked list`,
-    });
+    if (fullSnapshot && registry.network === "testnet") {
+      warnings.push({
+        path: "previousRegistry",
+        message: `Full snapshot: this replaces the published testnet chain (live version ${liveTip.version}) with a new base registry`,
+      });
+    } else {
+      errors.push({
+        path: "previousRegistry.ipfsHash",
+        message: fullSnapshot
+          ? `A full snapshot would cut off the published ${registry.network} chain (live version ${liveTip.version}); only testnet is reset this way`
+          : `A live registry exists (version ${liveTip.version}) but this registry has no previousRegistry.ipfsHash — it would be an orphan in the linked list`,
+      });
+    }
   }
 
   // --- chains ---

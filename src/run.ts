@@ -211,6 +211,7 @@ export async function generateNetwork(
       liveTip,
       liveChain,
       envChains: generated.envChains,
+      fullSnapshot: generated.summary.mode === "full",
     });
 
     await config.bucket.put(runKey(runId, `registry-${network}.json`), generated.text);
