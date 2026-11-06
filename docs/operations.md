@@ -66,14 +66,14 @@ The Actions run, the job summary and the Slack message name the person who start
 Slack message gives the reason `manual by <login>`. The deployment history of `manual-publish` names
 the reviewer who approved a publish.
 
-The workflow reads a copy of `MANUAL_TRIGGER_TOKEN` from the `manual-runs` environment of this
+The workflow reads a copy of `MANUAL_TRIGGER_TOKEN` from the `manual-triggers` environment of this
 repository. That environment allows deployments from `main` only. So a workflow that someone changes
 on another branch cannot read the token. Each time the token changes in 1Password, set the copy
 again:
 
 ```bash
 op run --environment weyggnasjjxhanfpqpxfpsl6za -- sh -c \
-  'printf %s "$MANUAL_TRIGGER_TOKEN" | gh secret set MANUAL_TRIGGER_TOKEN --env manual-runs -R centrifuge/protocol-registry'
+  'printf %s "$MANUAL_TRIGGER_TOKEN" | gh secret set MANUAL_TRIGGER_TOKEN --env manual-triggers -R centrifuge/protocol-registry'
 ```
 
 The `manual-publish` environment holds no secret. Its required reviewers approve each publish. If it
