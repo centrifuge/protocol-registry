@@ -18,7 +18,15 @@ export interface ManualRun {
   allowHistoryDrop?: boolean;
   /** Preview only: the commit to generate from (a publish always takes the branch head). */
   sha?: string;
+  /** Who started the run. The reason becomes "manual by <by>", which Slack and GET /status show. */
+  by?: string;
 }
+
+/**
+ * A GitHub login (39 characters at most, "[bot]" added for an app) or a name. Slack reads `*_~` and
+ * backticks as formatting, and `<>&` as links and mentions, so the field allows none of them.
+ */
+const BY = /^[\p{L}\p{N}][\p{L}\p{N} .'[\]-]{0,63}$/u;
 
 /** The parameters of the run, or why the body is refused. */
 export function manualParams(body: ManualRun): RunParams | string {
@@ -38,9 +46,12 @@ export function manualParams(body: ManualRun): RunParams | string {
     return `sourceCid must be a CID, with exactly one network`;
   }
   if (body.sha && body.kind === "publish") return `a publish always generates from the branch head`;
+  if (body.by !== undefined && (typeof body.by !== "string" || !BY.test(body.by))) {
+    return `by must be 1 to 64 letters, digits, spaces or . ' - [ ], and start with a letter or digit`;
+  }
   return {
     kind: body.kind,
-    reason: "manual",
+    reason: body.by === undefined ? "manual" : `manual by ${body.by}`,
     ...(body.sha && { sha: body.sha }),
     ...(body.networks && { networks: body.networks }),
     ...(body.mode && { mode: body.mode }),

@@ -31,7 +31,7 @@ import {
 
 export interface RunParams {
   kind: "preview" | "publish";
-  /** Why the run started, for the report: "push of abc123 by …", "cron", "manual". */
+  /** Why the run started, for the report: "push of abc123 by …", "cron", "manual", "manual by …". */
   reason: string;
   /** The commit to generate from; a publish without one takes the source branch head. */
   sha?: string;

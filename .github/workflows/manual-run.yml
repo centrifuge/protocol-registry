@@ -93,12 +93,13 @@ jobs:
           ALLOW_PARTIAL_CHAIN: ${{ inputs.allowPartialChain }}
           ALLOW_HISTORY_DROP: ${{ inputs.allowHistoryDrop }}
         run: |
-          # The body omits each default, as the examples in docs/operations.md do
+          # The body omits each default, as the examples in docs/operations.md do. `by` names the
+          # person in the Slack message.
           jq -n \
             --arg kind "${KIND}" --arg networks "${NETWORKS}" --arg mode "${MODE}" --arg sha "${SHA}" \
             --arg sourceCid "${SOURCE_CID}" --arg allowPartialChain "${ALLOW_PARTIAL_CHAIN}" \
-            --arg allowHistoryDrop "${ALLOW_HISTORY_DROP}" '
-              {kind: $kind}
+            --arg allowHistoryDrop "${ALLOW_HISTORY_DROP}" --arg by "${GITHUB_TRIGGERING_ACTOR}" '
+              {kind: $kind, by: $by}
               + if $networks == "both" then {} else {networks: [$networks]} end
               + if $mode == "auto" then {} else {mode: $mode} end
               + if $sha == "" then {} else {sha: $sha} end
@@ -106,7 +107,7 @@ jobs:
               + if $allowPartialChain == "true" then {allowPartialChain: true} else {} end
               + if $allowHistoryDrop == "true" then {allowHistoryDrop: true} else {} end' \
             > "${RUNNER_TEMP}/body.json"
-          echo "POST /runs $(jq -c . "${RUNNER_TEMP}/body.json"), started by ${GITHUB_TRIGGERING_ACTOR}"
+          echo "POST /runs $(jq -c . "${RUNNER_TEMP}/body.json")"
 
           echo "since=$(date +%s%3N)" >> "${GITHUB_OUTPUT}"
           code=$(curl -sS --max-time 60 -X POST "${WORKER_URL}/runs" -H @"${RUNNER_TEMP}/auth" \
@@ -139,7 +140,8 @@ jobs:
         env:
           SINCE: ${{ steps.start.outputs.since }}
         run: |
-          want=$(jq -c '. + {reason: "manual"}' "${RUNNER_TEMP}/body.json")
+          # The Worker stores `by` in the reason
+          want=$(jq -c 'del(.by) + {reason: "manual by \(.by)"}' "${RUNNER_TEMP}/body.json")
           while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
             sleep 30
             curl -sS --fail-with-body --max-time 30 "${WORKER_URL}/status" -H @"${RUNNER_TEMP}/auth" \

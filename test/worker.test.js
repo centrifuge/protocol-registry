@@ -5,6 +5,7 @@ import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
+import { manualParams } from "../src/manual.ts";
 import { toPublish } from "../src/report.ts";
 import { pointHostname, publishMode, TipMovedError } from "../src/run.ts";
 import { route, touchesRegistryInputs } from "../src/webhook.ts";
@@ -97,6 +98,26 @@ test("only paths under env/ that feed the registry count as registry changes", (
 test("a tag being created starts nothing: protocol-internal builds its ABIs on push", () => {
   const payload = { repository, ref_type: "tag", ref: "v3.3.0" };
   assert.equal(route("create", payload, config).type, "ignore");
+});
+
+test("a manual run names in its reason who started it, in plain text only", () => {
+  for (const [label, by, expected] of [
+    ["nobody named", undefined, "manual"],
+    ["a GitHub login", "octo-cat", "manual by octo-cat"],
+    ["a GitHub App", "renovate[bot]", "manual by renovate[bot]"],
+    ["a name", "José O'Brien", "manual by José O'Brien"],
+    ["64 characters", "a".repeat(64), `manual by ${"a".repeat(64)}`],
+    ["65 characters", "a".repeat(65), /^by must/],
+    ["empty", "", /^by must/],
+    ["not a string", 42, /^by must/],
+    ["a Slack mention", "<!channel>", /^by must/],
+    ["Slack formatting", "*dev*", /^by must/],
+    ["a second line", "dev\n>approved", /^by must/],
+  ]) {
+    const params = manualParams({ kind: "publish", by });
+    if (typeof expected === "string") assert.equal(params.reason, expected, label);
+    else assert.match(params, expected, label);
+  }
 });
 
 async function sign(secret, body) {

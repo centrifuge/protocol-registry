@@ -46,6 +46,7 @@ gh workflow run manual-run.yml -R centrifuge/protocol-registry -f kind=preview -
 1. A publish waits until a reviewer of the `manual-publish` environment approves it. A preview
    starts immediately.
 2. The job sends the inputs to `POST /runs`. The body omits each input that has its default value.
+   The body also has `by`, the GitHub login of the person who started the workflow.
 3. The job follows the run for 30 minutes at most. Then it writes the report of the run to the job
    summary.
 
@@ -61,9 +62,9 @@ The Publisher queues a publish behind its active run, and gives it no id. The jo
 in `GET /status` when it starts. A later manual publish replaces a queued one. The job then fails and
 names the publish that replaced it.
 
-The Actions run and the job summary name the person who started the run. The deployment history of
-`manual-publish` names the reviewer who approved a publish. The Slack message gives only the reason
-`manual`.
+The Actions run, the job summary and the Slack message name the person who started the run. The
+Slack message gives the reason `manual by <login>`. The deployment history of `manual-publish` names
+the reviewer who approved a publish.
 
 The workflow reads a copy of `MANUAL_TRIGGER_TOKEN` from the `manual-runs` environment of this
 repository. That environment allows deployments from `main` only. So a workflow that someone changes
@@ -97,12 +98,14 @@ op run --environment weyggnasjjxhanfpqpxfpsl6za -- sh -c \
 | `sourceCid`         | Build on this CID instead of the live layer. Needs exactly one network. Use it to generate a broken layer again, or to test against an older layer. |
 | `allowPartialChain` | Continue when the run cannot walk the whole chain. Expect the run to emit published contracts and retirements again.                                |
 | `allowHistoryDrop`  | Let a full snapshot drop published, unretired contracts. Use it only to replace the deployment on purpose.                                          |
+| `by`                | The person who starts the run: 1 to 64 letters, digits, spaces or `. ' - [ ]`. Slack and `GET /status` give the reason `manual by <by>`.            |
 
 Examples of `-d` bodies:
 
 ```bash
 '{"kind":"preview","sha":"<commit>"}'                      # what a branch or PR head would publish
 '{"kind":"publish"}'                                        # publish now, queued behind a running publish
+'{"kind":"publish","by":"<your name>"}'                     # Slack names you
 '{"kind":"publish","networks":["mainnet"]}'                 # one network
 '{"kind":"preview","networks":["testnet"],"mode":"patch"}'  # force a patch
 ```
