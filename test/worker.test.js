@@ -94,7 +94,7 @@ test("only paths under env/ that feed the registry count as registry changes", (
   assert.equal(touchesRegistryInputs("environment.md"), false);
 });
 
-test("a tag being created starts nothing: protocol-internal builds its ABIs on push", () => {
+test("a tag being created starts nothing: protocol builds its ABIs on push", () => {
   const payload = { repository, ref_type: "tag", ref: "v3.3.0" };
   assert.equal(route("create", payload, config).type, "ignore");
 });

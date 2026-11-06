@@ -1,7 +1,7 @@
 /**
- * ABIs as built at a protocol-internal tag.
+ * ABIs as built at a protocol tag.
  *
- * A tag's source never changes, so each tag is built once, by protocol-internal's
+ * A tag's source never changes, so each tag is built once, by protocol's
  * .github/workflows/build-abis.yml when the tag is pushed, into one object per artifact:
  *
  *     abis/<tag>/<Artifact>.json    the artifact's ABI array

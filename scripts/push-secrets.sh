@@ -15,8 +15,8 @@
 #   shadow  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET, SLACK_WEBHOOK_URL,
 #           MANUAL_TRIGGER_TOKEN
 #   pin     the above and PINATA_JWT
-#   live    the above and CLOUDFLARE_API_TOKEN, read from the ops-v3 item .env.1password references
-#           (ops-v3's token reconciler rotates it there)
+#   live    the above and CLOUDFLARE_API_TOKEN, read from the 1Password item .env.1password
+#           references (the infrastructure repository rotates it there)
 #
 # A secret already uploaded stays when the mode goes back down: remove it with `wrangler secret delete`.
 # Extra arguments go to wrangler. Re-run after rotating any of them.

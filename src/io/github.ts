@@ -1,6 +1,6 @@
 /**
- * GitHub, as the protocol-registry GitHub App: reading protocol-internal (env at a commit, tags,
- * commits) and reporting on its pull requests (check runs). The App is installed on protocol-internal
+ * GitHub, as the protocol-registry GitHub App: reading protocol (env at a commit, tags,
+ * commits) and reporting on its pull requests (check runs). The App is installed on protocol
  * alone, with no Actions permission.
  *
  * The App authenticates with a JWT signed by its private key, exchanged for an installation token

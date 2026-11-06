@@ -1,5 +1,5 @@
 /**
- * Every env contract must record a `version` that resolves to a protocol-internal tag, since that tag
+ * Every env contract must record a `version` that resolves to a protocol tag, since that tag
  * is where its ABI is built from.
  *
  * A directory may alias a version to another tag (`env/<dir>/versions.json`): that is how the ABIs of

@@ -1,6 +1,6 @@
 /**
  * The protocol-registry Worker: keeps registry.centrifuge.io and registry.testnet.centrifuge.io in
- * step with protocol-internal's env configs on the release branch.
+ * step with protocol's env configs on the release branch.
  *
  *   POST /webhooks/github     the GitHub App's deliveries (see ./webhook.ts for what each one does)
  *   POST /runs                a manual run (bearer MANUAL_TRIGGER_TOKEN), see ManualRun
