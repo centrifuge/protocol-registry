@@ -7,8 +7,8 @@ deploy block and, once out of use, the block its indexer listener ends at. Index
 
 The registry is generated from the env configs that protocol-internal's deploy scripts write. This
 repository holds the generator and runs it as a Cloudflare Worker, triggered by GitHub. It replaces
-`script/registry/` and the `registry.yml` workflow, which each live branch of protocol-internal used to
-carry a copy of. Its layer reading and verification are also published as the package
+[`script/registry/`][pi-script-registry] and the [`registry.yml`][pi-registry-yml] workflow, which each
+live branch of protocol-internal used to carry a copy of. Its layer reading and verification are also published as the package
 [`@centrifuge/registry-core`](#package), for consumers that pin a registry head.
 
 - [How it works](#how-it-works)
@@ -76,15 +76,15 @@ history diffing for other consumers, published as [`@centrifuge/registry-core`](
 
 ## Inputs: protocol-internal's env/
 
-Everything the registry says comes from `env/` on the release branch of
+Everything the registry says comes from [`env/`][pi-env] on the [release branch][pi-branch] of
 [protocol-internal](https://github.com/centrifuge/protocol-internal):
 
-| File                               | Written by     | Says                                                                                                                                                       |
-| ---------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `env/<environment>/<network>.json` | deploy scripts | what is deployed on a chain: contracts with address, block and `version`                                                                                   |
-| `env/registry.json`                | people         | which directory each registry publishes: `{ "mainnet": "mainnet", "testnet": "testnet-rev2" }`; a missing entry means the directory of the registry's name |
-| `env/<environment>/versions.json`  | people         | which git tag backs a version, for a deployment made before its release was tagged: `{ "tags": { "v3.3": "v3.3.0-rc2" } }`                                 |
-| `env/<environment>/retired.json`   | people         | which contracts are out of use, and the block their listeners end at (see [Retirement](#retirement))                                                       |
+| File                                    | Written by     | Says                                                                                                                                                       |
+| --------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `env/<environment>/<network>.json`      | deploy scripts | what is deployed on a chain: contracts with address, block and `version`                                                                                   |
+| [`env/registry.json`][pi-registry-json] | people         | which directory each registry publishes: `{ "mainnet": "mainnet", "testnet": "testnet-rev2" }`; a missing entry means the directory of the registry's name |
+| `env/<environment>/versions.json`       | people         | which git tag backs a version, for a deployment made before its release was tagged: `{ "tags": { "v3.3": "v3.3.0-rc2" } }`                                 |
+| `env/<environment>/retired.json`        | people         | which contracts are out of use, and the block their listeners end at (see [Retirement](#retirement))                                                       |
 
 A config holds `network`, `adapters` and `contracts`, and every contract records an integer
 `blockNumber`. It records no deployment metadata: a chain's `deployment.startBlock` is the earliest
@@ -234,7 +234,7 @@ case and names the ABI it ships.
 ## ABIs
 
 A Worker cannot run git or forge, so ABIs are built ahead of time, once per release tag, by
-protocol-internal's `.github/workflows/build-abis.yml`, which runs when a tag is pushed: it checks out
+protocol-internal's [`.github/workflows/build-abis.yml`][pi-build-abis], which runs when a tag is pushed: it checks out
 the tag, runs `forge build` (and the `ir` profile, for `src-ir/`), and writes one R2 object per
 artifact, `abis/<tag>/<Artifact>.json`, then `abis/<tag>/manifest.json` with the commit it built. A
 tag pushed before that workflow existed is built by dispatching it by hand:
@@ -505,3 +505,12 @@ network's hostname serves (or `--head`) through the gateways, verifies every lay
 `layerFromBytes`, prints one line per layer and the count, and exits 1 naming the CID of a layer no
 gateway served matching bytes for. Run it for both networks before a release of the package and
 after a publish of a layer.
+
+<!-- protocol-internal links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol-internal removes. -->
+
+[pi-env]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env
+[pi-registry-json]: https://github.com/centrifuge/protocol-internal/blob/live-v3.3/env/registry.json
+[pi-branch]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3
+[pi-build-abis]: https://github.com/centrifuge/protocol-internal/blob/main/.github/workflows/build-abis.yml
+[pi-script-registry]: https://github.com/centrifuge/protocol-internal/tree/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry
+[pi-registry-yml]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/.github/workflows/registry.yml

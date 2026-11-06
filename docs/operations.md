@@ -21,8 +21,8 @@ section describes the setup: the App, the secrets and the deploys.
 
 The usual case needs no action:
 
-- A pull request into protocol-internal's release branch that touches `env/` gets a **Registry
-  preview** check run. The check run shows the layer that each network would get, its retirements, and
+- A pull request into protocol-internal's [release branch][pi-branch] that touches [`env/`][pi-env]
+  gets a **Registry preview** check run. The check run shows the layer that each network would get, its retirements, and
   every finding. "Re-run" on the check runs it again.
 - A merge of that pull request publishes, as far as `PUBLISH_MODE` allows. Slack says what happened.
 - The cron also starts a publish run every six hours. So the Worker retries a dropped webhook or a
@@ -134,7 +134,8 @@ hostname ids.
 
 ## ABIs
 
-protocol-internal's `.github/workflows/build-abis.yml` builds each release tag once, into R2:
+protocol-internal's [`.github/workflows/build-abis.yml`][pi-build-abis] builds each release tag once,
+into R2:
 
 ```
 abis/<tag>/<Artifact>.json   one ABI per artifact
@@ -241,22 +242,41 @@ The Worker also caches protocol-internal's `env/` by commit, at `snapshots/<sha>
 
 ## From protocol-internal's scripts
 
-| protocol-internal (`script/registry/`)                            | Here                                                                                                                                                |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `registry.yml` on pull requests: the Registry Preview comment     | the **Registry preview** check run on the PR                                                                                                        |
-| `registry.yml` on push: `pin-to-ipfs.js`, `update-cloudflare.js`  | a publish run, as far as `PUBLISH_MODE` allows                                                                                                      |
-| `registry-publish.yml` dispatch on protocol-internal's `main`     | `POST /runs` with `{"kind":"publish"}`                                                                                                              |
-| `node script/registry/abi-registry.js <network>`                  | `node scripts/generate.ts <network> --source-repo <checkout>`                                                                                       |
-| `REGISTRY_MODE=delta \| patch \| full`, `--full`                  | `mode` / `--mode`                                                                                                                                   |
-| `SOURCE_IPFS=<cid>`                                               | `sourceCid` / `--source-cid`                                                                                                                        |
-| `ALLOW_PARTIAL_REGISTRY_CHAIN=1`                                  | `allowPartialChain` / `--allow-partial-chain`                                                                                                       |
-| `ALLOW_HISTORY_DROP=1`                                            | `allowHistoryDrop` / `--allow-history-drop`                                                                                                         |
-| `REGISTRY_CHAIN_MAX_DEPTH`                                        | none: the walk stops at 500 layers                                                                                                                  |
-| `REGISTRY_CHAIN_CACHE_DIR`, `REGISTRY_CHAIN_NO_CACHE=1`           | none: delete `cache/registry-chain/` to fetch the layers again                                                                                      |
-| `SKIP_LIVE_REGISTRY_CHECK=1`                                      | none: every check runs, every time                                                                                                                  |
-| `build-abi-cache.js`, `cache/abi-registry/<tag>/out/`             | protocol-internal's `build-abis.yml` into R2 `abis/<tag>/`. Locally, `cache/abis/<tag>/`.                                                           |
-| `validate-env-schema.js`, `validate-env-contract-version-tags.js` | the "check env" step of a run: a preview with `sha`                                                                                                 |
-| `validate-registry.js`                                            | every run validates. The reports are at `runs/<id>/registry-<network>.validation.json`.                                                             |
-| `walk-registry-chain.js`                                          | [Auditing the published chain](#auditing-the-published-chain)                                                                                       |
-| `validate-api-keys.js`                                            | [Checking the publishing credentials](#checking-the-publishing-credentials)                                                                         |
-| `detect-changed-environments.js`                                  | the Worker previews a PR, or publishes a push, that touches `env/`. Generation is per network. A network with nothing to publish publishes nothing. |
+| protocol-internal ([`script/registry/`][pi-script-registry])                                                                  | Here                                                                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`registry.yml`][pi-registry-yml] on pull requests: the Registry Preview comment                                              | the **Registry preview** check run on the PR                                                                                                        |
+| [`registry.yml`][pi-registry-yml] on push: [`pin-to-ipfs.js`][pi-pin-to-ipfs], [`update-cloudflare.js`][pi-update-cloudflare] | a publish run, as far as `PUBLISH_MODE` allows                                                                                                      |
+| [`registry-publish.yml`][pi-registry-publish-yml] dispatch on protocol-internal's `main`                                      | `POST /runs` with `{"kind":"publish"}`                                                                                                              |
+| [`node script/registry/abi-registry.js <network>`][pi-abi-registry]                                                           | `node scripts/generate.ts <network> --source-repo <checkout>`                                                                                       |
+| `REGISTRY_MODE=delta \| patch \| full`, `--full`                                                                              | `mode` / `--mode`                                                                                                                                   |
+| `SOURCE_IPFS=<cid>`                                                                                                           | `sourceCid` / `--source-cid`                                                                                                                        |
+| `ALLOW_PARTIAL_REGISTRY_CHAIN=1`                                                                                              | `allowPartialChain` / `--allow-partial-chain`                                                                                                       |
+| `ALLOW_HISTORY_DROP=1`                                                                                                        | `allowHistoryDrop` / `--allow-history-drop`                                                                                                         |
+| `REGISTRY_CHAIN_MAX_DEPTH`                                                                                                    | none: the walk stops at 500 layers                                                                                                                  |
+| `REGISTRY_CHAIN_CACHE_DIR`, `REGISTRY_CHAIN_NO_CACHE=1`                                                                       | none: delete `cache/registry-chain/` to fetch the layers again                                                                                      |
+| `SKIP_LIVE_REGISTRY_CHECK=1`                                                                                                  | none: every check runs, every time                                                                                                                  |
+| [`build-abi-cache.js`][pi-build-abi-cache], `cache/abi-registry/<tag>/out/`                                                   | protocol-internal's [`build-abis.yml`][pi-build-abis] into R2 `abis/<tag>/`. Locally, `cache/abis/<tag>/`.                                          |
+| [`validate-env-schema.js`][pi-validate-env-schema], [`validate-env-contract-version-tags.js`][pi-validate-version-tags]       | the "check env" step of a run: a preview with `sha`                                                                                                 |
+| [`validate-registry.js`][pi-validate-registry]                                                                                | every run validates. The reports are at `runs/<id>/registry-<network>.validation.json`.                                                             |
+| [`walk-registry-chain.js`][pi-walk-chain]                                                                                     | [Auditing the published chain](#auditing-the-published-chain)                                                                                       |
+| [`validate-api-keys.js`][pi-validate-api-keys]                                                                                | [Checking the publishing credentials](#checking-the-publishing-credentials)                                                                         |
+| [`detect-changed-environments.js`][pi-detect-changed]                                                                         | the Worker previews a PR, or publishes a push, that touches `env/`. Generation is per network. A network with nothing to publish publishes nothing. |
+
+<!-- protocol-internal links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol-internal removes. -->
+
+[pi-env]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env
+[pi-branch]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3
+[pi-build-abis]: https://github.com/centrifuge/protocol-internal/blob/main/.github/workflows/build-abis.yml
+[pi-script-registry]: https://github.com/centrifuge/protocol-internal/tree/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry
+[pi-registry-yml]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/.github/workflows/registry.yml
+[pi-registry-publish-yml]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/.github/workflows/registry-publish.yml
+[pi-pin-to-ipfs]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/pin-to-ipfs.js
+[pi-update-cloudflare]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/update-cloudflare.js
+[pi-abi-registry]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/abi-registry.js
+[pi-build-abi-cache]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/build-abi-cache.js
+[pi-validate-env-schema]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/validate-env-schema.js
+[pi-validate-version-tags]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/utils/validate-env-contract-version-tags.js
+[pi-validate-registry]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/validate-registry.js
+[pi-walk-chain]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/walk-registry-chain.js
+[pi-validate-api-keys]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/script/registry/validate-api-keys.js
+[pi-detect-changed]: https://github.com/centrifuge/protocol-internal/blob/13c52d77577381f5c2d5b8191b024f4492f7a415/.github/ci-scripts/detect-changed-environments.js

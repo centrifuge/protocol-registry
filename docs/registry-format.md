@@ -1,7 +1,7 @@
 # The registry format
 
 This file describes what a published layer contains, how the Worker computes a layer from
-protocol-internal's `env/`, and every rule that a layer must pass. The code is in `src/core/`.
+protocol-internal's [`env/`][pi-env], and every rule that a layer must pass. The code is in `src/core/`.
 [how-it-works.md](how-it-works.md) describes the flow around it.
 
 - [Layers and the chain](#layers-and-the-chain)
@@ -106,7 +106,7 @@ layers. For this reason, full mode still reads the published chain:
 - It keeps every published retirement in the snapshot.
 
 `allowHistoryDrop` overrides the refusal for the one case where the drop is the purpose. That case is
-a switch of protocol-internal's `env/registry.json` to another deployment, which changes every address
+a switch of protocol-internal's [`env/registry.json`][pi-registry-json] to another deployment, which changes every address
 in the registry. A snapshot made while no layer is reachable carries no history, and says so. While a
 registry is live, only a testnet snapshot passes the orphan rule (see
 [Indexer hard requirements](#indexer-hard-requirements)).
@@ -142,7 +142,7 @@ release drops every contract it did not deploy again. A cleanup can drop a key. 
 the contract is in use.
 
 A retirement by absence once retired the v3.1 on/off-ramp factory while 93 managers still used it
-(protocol-internal#407). It also once published a layer that retired the whole protocol, from configs
+([protocol-internal#407][pi-407]). It also once published a layer that retired the whole protocol, from configs
 that recorded only `root`. So retirement is a declaration.
 
 ## Retirement
@@ -152,7 +152,7 @@ migrated from it, or one contract that is confirmed out of use. This is a decisi
 release, made after the fact. So someone writes it down, and the Worker does not infer it. The
 declaration sits beside the configs, not in one, because a deploy run writes a config again in full.
 
-The file is protocol-internal's `env/<environment>/retired.json`. Its keys are network names, which
+The file is protocol-internal's [`env/<environment>/retired.json`][pi-env]. Its keys are network names, which
 resolve through the configs in the same directory. A key that matches no `<network>.json` there is an
 error, never a skip. The schema check refuses a `retired` key inside a config.
 
@@ -224,7 +224,7 @@ published layers, and still shadow. They carry no ABI. Nothing writes new ones.
 
 ## Versions, tags and ABIs
 
-Each contract in a config in protocol-internal's `env/` records a `version`. The version resolves to a git tag of protocol-internal
+Each contract in a config in protocol-internal's `env/` records a `version`. The version resolves to a [git tag][pi-tags] of protocol-internal
 (`3` → `v3`, `v3.1` → `v3.1.0`), and the ABI comes from the build of that tag. So a chain that mixes
 releases gets the right ABI for every contract. Every version must resolve to a tag that exists. The run
 waits for the ABI bundle of that tag (see [operations.md](operations.md#abis)).
@@ -234,14 +234,14 @@ waits for the ABI bundle of that tag (see [operations.md](operations.md#abis)).
 A testnet deployed on a release that is still open records `"version": "v3.3"` for a `v3.3` tag that
 does not exist yet. Once the tag exists, the testnet must not borrow it, because its contracts are the
 release candidate, not the release. The directory states which tag backs each version, in
-protocol-internal's `env/<environment>/versions.json`:
+protocol-internal's [`env/<environment>/versions.json`][pi-env]:
 
 ```json
 { "tags": { "v3.3": "v3.3.0-rc2" } }
 ```
 
 The file is per directory, because a directory is a deployment. The same `v3.3` means the release in
-protocol-internal's `env/mainnet/`, and the candidate in a testnet directory that deployed before the release. An
+protocol-internal's [`env/mainnet/`][pi-env-mainnet], and the candidate in a testnet directory that deployed before the release. An
 alias replaces the candidate list, and does not prepend to it. So the lookup never reaches a tag with
 the name of the version behind the alias. The file sits with the configs, so it stays valid after
 `env/registry.json` points elsewhere.
@@ -492,3 +492,11 @@ This is how a release closes today. No contract changes. The layer carries only 
 - **Verifying what you read:** `verifyLayer` in `@centrifuge/registry-core` proves that the bytes are
   the ones a CID names. So a consumer that pins a head can trust every layer under it (see the README's
   Package section).
+
+<!-- protocol-internal links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol-internal removes. -->
+
+[pi-env]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env
+[pi-env-mainnet]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env/mainnet
+[pi-registry-json]: https://github.com/centrifuge/protocol-internal/blob/live-v3.3/env/registry.json
+[pi-tags]: https://github.com/centrifuge/protocol-internal/tags
+[pi-407]: https://github.com/centrifuge/protocol-internal/pull/407
