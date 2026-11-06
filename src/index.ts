@@ -3,7 +3,7 @@
  * step with protocol-internal's env configs on the release branch.
  *
  *   POST /webhooks/github     the GitHub App's deliveries (see ./webhook.ts for what each one does)
- *   POST /runs                a manual run (bearer MANUAL_TRIGGER_TOKEN), see ManualRun
+ *   POST /runs                a manual run (bearer MANUAL_TRIGGER_TOKEN), see ./manual.ts
  *   GET  /runs/<id>           a run's status and report
  *   GET  /runs/<id>/<file>    a run's generated registry-<network>.json or .validation.json
  *   GET  /status              the publisher: active run, pending run, recent history
@@ -12,10 +12,8 @@
  */
 
 import { github } from "./config.ts";
-import type { RegistryMode } from "./core/generate.ts";
-import { NETWORKS, type Network } from "./core/types.ts";
 import { createCheckRun, pullRequestFiles, verifyWebhookSignature } from "./io/github.ts";
-import { isValidIpfsHash } from "./io/ipfs.ts";
+import { manualParams, type ManualRun } from "./manual.ts";
 import { route, touchesRegistryInputs } from "./webhook.ts";
 import type { RunParams } from "./workflow.ts";
 
@@ -23,19 +21,6 @@ import { Publisher } from "./publisher.ts";
 
 export { Publisher };
 export { RegistryRun } from "./workflow.ts";
-
-/** POST /runs */
-interface ManualRun {
-  kind: "preview" | "publish";
-  networks?: Network[];
-  mode?: RegistryMode;
-  /** Build on this CID instead of the live tip; needs exactly one network. */
-  sourceCid?: string;
-  allowPartialChain?: boolean;
-  allowHistoryDrop?: boolean;
-  /** Preview only: the commit to generate from (a publish always takes the branch head). */
-  sha?: string;
-}
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body, null, 2), {
@@ -52,35 +37,6 @@ async function authorized(request: Request, env: Env): Promise<boolean> {
   const given = new TextEncoder().encode(request.headers.get("Authorization") ?? "");
   const expected = new TextEncoder().encode(`Bearer ${env.MANUAL_TRIGGER_TOKEN}`);
   return given.byteLength === expected.byteLength && crypto.subtle.timingSafeEqual(given, expected);
-}
-
-function manualParams(body: ManualRun): RunParams | string {
-  if (body.kind !== "preview" && body.kind !== "publish")
-    return `kind must be "preview" or "publish"`;
-  if (body.networks && !body.networks.every((n) => NETWORKS.includes(n))) {
-    return `networks must be among ${NETWORKS.join(", ")}`;
-  }
-  if (body.mode && !["auto", "delta", "patch", "full"].includes(body.mode)) {
-    return `mode must be one of auto, delta, patch, full`;
-  }
-  // Validation refuses it anyway; saying so here spares a run
-  if (body.mode === "full" && (body.networks ?? NETWORKS).includes("mainnet")) {
-    return `a full snapshot replaces the published chain, which only testnet does: pass "networks": ["testnet"]`;
-  }
-  if (body.sourceCid && (!isValidIpfsHash(body.sourceCid) || body.networks?.length !== 1)) {
-    return `sourceCid must be a CID, with exactly one network`;
-  }
-  if (body.sha && body.kind === "publish") return `a publish always generates from the branch head`;
-  return {
-    kind: body.kind,
-    reason: "manual",
-    ...(body.sha && { sha: body.sha }),
-    ...(body.networks && { networks: body.networks }),
-    ...(body.mode && { mode: body.mode }),
-    ...(body.sourceCid && { sourceCid: body.sourceCid }),
-    ...(body.allowPartialChain && { allowPartialChain: true }),
-    ...(body.allowHistoryDrop && { allowHistoryDrop: true }),
-  };
 }
 
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
