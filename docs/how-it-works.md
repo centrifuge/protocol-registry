@@ -7,67 +7,141 @@ longer in use, it also gives the block where its listener ends. There is one reg
 - **mainnet**, served at `https://registry.centrifuge.io`
 - **testnet**, served at `https://registry.testnet.centrifuge.io`
 
-Each registry is a chain of JSON documents on IPFS. Each document is a **layer**. A layer carries
-only what changed since the previous layer, and names that layer by CID in `previousRegistry.ipfsHash`.
-The first layer is a base snapshot. To read a registry, walk the chain from the newest layer back to
-the base, and merge the layers. The newest layer wins.
+Two repositories make the registry:
 
-Each hostname serves the newest layer of its network. The hostname is a Cloudflare Web3 gateway
-hostname, and its DNSLink names the CID of that layer.
+- **protocol-internal holds the inputs.** Its deploy scripts record each deployed contract in `env/`
+  on the release branch. Its release tags give the source of each ABI.
+- **This repository holds the program.** A Cloudflare Worker reads protocol-internal's `env/`,
+  generates the registry from it, and publishes the result.
 
-This repository generates and publishes the layers. It runs as a Cloudflare Worker, and GitHub events
-trigger it. It replaces the [`script/registry/`][pi-script-registry] scripts and the
-[`registry.yml`][pi-registry-yml] workflow that each live branch of protocol-internal carried. [registry-format.md](registry-format.md) describes the layer
-format. [operations.md](operations.md) describes day-to-day operation.
+A GitHub App connects the two repositories. It sends protocol-internal's push, pull request and
+check run events to the Worker. It also lets the Worker read protocol-internal and post check runs
+there. An R2 bucket carries the ABIs from protocol-internal to the Worker.
 
-## The pieces
-
-| Piece                                                     | What it does                                                                                                                                                                                                                    |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| protocol-internal's [`env/`][pi-env]                      | The input. Deploy scripts write one config per chain on protocol-internal's release branch ([`live-v3.3`][pi-branch]). People write `retired.json`, `versions.json` and [`registry.json`][pi-registry-json] beside the configs. |
-| protocol-internal's [release tags][pi-tags] (`v3.3.0`, …) | Each contract `version` resolves to a tag. The ABI of the contract comes from the source at that tag.                                                                                                                           |
-| protocol-internal's [`build-abis.yml`][pi-build-abis]     | Builds the ABIs of a tag once, when someone pushes the tag, into the R2 bucket under `abis/<tag>/`. The Worker cannot run git or forge, so the ABIs come from this workflow.                                                    |
-| R2 bucket `centrifuge-protocol-registry`                  | Holds ABI bundles, a cache of published layers by CID, `env/` snapshots by commit, and the generated layers and report of each run.                                                                                             |
-| GitHub App "Centrifuge Protocol Registry"                 | Installed on protocol-internal only. Sends push, pull request and check run events to the Worker. Lets the Worker read protocol-internal's `env/` and post check runs.                                                          |
-| The Worker                                                | Receives the events, decides what each event asks for, and starts runs.                                                                                                                                                         |
-| Publisher (Durable Object)                                | Lets one publish run go at a time, so two publish runs never race for the same hostname.                                                                                                                                        |
-| RegistryRun (Workflow)                                    | One run, as durable steps. Each step retries on its own: read `env/`, check it, find the ABIs, generate and validate each network, then preview or publish.                                                                     |
-| Pinata                                                    | Pins each published layer to IPFS.                                                                                                                                                                                              |
-| Cloudflare Web3 hostnames                                 | `registry.centrifuge.io` and `registry.testnet.centrifuge.io`. Each hostname points at the CID of a layer.                                                                                                                      |
-| Slack                                                     | Receives a message for each publish, refusal and failure.                                                                                                                                                                       |
-| Consumers                                                 | Indexers and apps that read the chain: api-v3, event-lake and the apps built on it.                                                                                                                                             |
+The Worker replaces the [`script/registry/`][pi-script-registry] scripts and the
+[`registry.yml`][pi-registry-yml] workflow that each live branch of protocol-internal carried.
+[registry-format.md](registry-format.md) describes the layer format. [operations.md](operations.md)
+describes day-to-day operation.
 
 ## The flow
 
+A pull request into the release branch gets a preview. A merge into the release branch publishes.
+
 ```mermaid
 flowchart LR
-  subgraph PI["protocol-internal"]
-    deploy["Deploy scripts"] -->|write configs| env["env/ on live-v3.3"]
-    people["People"] -->|retired.json, versions.json| env
-    tag["Release tag pushed"] --> build["build-abis.yml"]
+  subgraph previewLane["Pull request: preview"]
+    direction TB
+    prChange["The PR changes env/"]:::pi
+    prStart["Worker posts a check run<br/>and starts a preview run"]
+    prGenerate["Check env/ and the ABIs,<br/>generate and validate<br/>each layer"]
+    prCheck["The check run on the PR<br/>shows the layers<br/>and every finding"]:::pi
+    prChange -->|"GitHub App:<br/>pull_request event"| prStart
+    prStart --> prGenerate --> prCheck
   end
 
-  build -->|"abis/TAG/"| R2[("R2 bucket")]
-  env -->|"PR and push events (GitHub App)"| W["Worker"]
-  cron["Cron, every 6 hours"] --> W
-  manual["POST /runs"] --> W
+  subgraph publishLane["Merge: publish"]
+    direction TB
+    mergeChange["The merge changes env/"]:::pi
+    cronTrigger["Cron, every 6 hours"]
+    pubStart["The Publisher starts<br/>one publish run at a time"]
+    pubGenerate["The same checks<br/>and generation,<br/>on the branch head"]
+    pinLayer["Pin each new layer<br/>to IPFS through Pinata"]
+    pointDns["Point the DNSLink<br/>of the hostname<br/>at the new CID"]
+    postSlack["Post the result to Slack"]
+    mergeChange -->|"GitHub App:<br/>push event"| pubStart
+    cronTrigger --> pubStart
+    pubStart --> pubGenerate --> pinLayer --> pointDns --> postSlack
+  end
 
-  W -->|preview| RR["RegistryRun workflow"]
-  W -->|publish| P["Publisher (one at a time)"] --> RR
-
-  RR -->|"env/ at the commit"| GH["GitHub API"]
-  RR <-->|"ABIs, layer cache, run output"| R2
-  RR -->|walk the published chain| IPFS[("IPFS gateways")]
-
-  RR -->|preview| check["Registry preview check run on the PR"]
-  RR -->|"publish: pin"| pinata["Pinata"]
-  RR -->|"publish: point DNSLink"| cf["Cloudflare Web3 hostname"]
-  RR --> slack["Slack"]
-
-  cf --> host["registry.centrifuge.io / registry.testnet.centrifuge.io"]
-  host --> consumers["Consumers: api-v3, event-lake, apps"]
-  pinata -.-> IPFS
+  previewLane ~~~ publishLane
+  classDef pi fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
 ```
+
+The blue boxes are in protocol-internal. All other boxes are in the Worker.
+
+- `SOURCE_BRANCH` in `wrangler.jsonc` names the release branch. Today it is [`live-v3.3`][pi-branch].
+- Only a push or a pull request that changes `env/` starts a run. A pull request that changes nothing
+  under `env/` gets no check run. A draft pull request gets a preview too.
+- The cron is a trigger of the Worker itself. It asks for a publish run every six hours, so a missed
+  event or a failed run gets a retry.
+- A maintainer can also start a preview or a publish run with `POST /runs`. See
+  [operations.md](operations.md#manual-runs).
+
+**What a publish adds.** Each registry is a chain of JSON documents on IPFS. Each document is a
+**layer**. A layer carries only what changed since the previous layer. It names that layer by CID in
+`previousRegistry.ipfsHash`. The first layer is a base snapshot. To read a registry, walk the chain
+from the newest layer back to the base, and merge the layers. The newest layer wins.
+
+A publish run adds one layer to each network that has changes and no errors. The hostname of each
+network is a Cloudflare Web3 gateway hostname. Its DNSLink names the CID of the newest layer. So the
+run pins the new layer first, and then points the DNSLink at its CID.
+
+## The pieces
+
+### In protocol-internal
+
+- **[`env/`][pi-env] on the release branch.** This is the record of what is deployed.
+  - `env/<environment>/<network>.json` is the config of one chain. Deploy scripts write it.
+  - [`env/registry.json`][pi-registry-json] says which directory each registry publishes. People
+    write it.
+  - `env/<environment>/versions.json` and `env/<environment>/retired.json` are optional. People write
+    them. `versions.json` maps a `version` to a tag. `retired.json` declares the contracts that are
+    out of use.
+- **[Release tags][pi-tags]** (`v3.3.0`, …). Each contract `version` resolves to a tag. The ABI of
+  the contract comes from the source at that tag.
+- **[`build-abis.yml`][pi-build-abis]**, on `main`. When someone pushes a release tag, this workflow
+  builds the ABIs of the tag once. It uploads them to the R2 bucket under `abis/<tag>/`. The Worker
+  cannot run git or forge, so it needs these builds.
+- **The installation of the GitHub App** "Centrifuge Protocol Registry". The App is installed on
+  protocol-internal only.
+
+protocol-internal does not generate, validate or publish the registry. This repository does.
+
+### In this repository
+
+- **The Worker** (`src/index.ts`, `src/webhook.ts`). It receives the events, decides what each event
+  asks for, and starts runs. Its cron and `POST /runs` start runs too.
+- **Publisher** (`src/publisher.ts`), a Durable Object. It lets one publish run go at a time. See
+  [One publish at a time](#one-publish-at-a-time).
+- **RegistryRun** (`src/workflow.ts`), a Workflow. It does one run as durable steps. Each step
+  retries on its own.
+- **The generator** (`src/core/`). It computes and validates the layers. It does no I/O. The clients
+  for GitHub, IPFS, Pinata, Cloudflare and Slack are in `src/io/`.
+- **`@centrifuge/registry-core`**, on npmjs. It is the layer reading and verification code of
+  `src/core/`, for consumers that pin a registry head (see the README's Package section).
+- **`wrangler.jsonc`**, the settings of the Worker: `SOURCE_REPO`, `SOURCE_BRANCH`, `PUBLISH_MODE`,
+  the hostnames and the zone.
+
+### Outside both repositories
+
+- **The R2 bucket `centrifuge-protocol-registry`**, in the Cloudflare Official account. ops-v3
+  manages it. It holds the ABI bundles from `build-abis.yml`, and the caches and run output of the
+  Worker. See [What lives where](#what-lives-where).
+- **Pinata** pins each published layer to IPFS.
+- **The Cloudflare Web3 hostnames** `registry.centrifuge.io` and `registry.testnet.centrifuge.io`.
+  The DNSLink of each hostname names the CID of its newest layer.
+- **Slack** receives a message when a publish run publishes, refuses or fails.
+- **Consumers** are the indexers and apps that read the chain: api-v3, event-lake and the apps built
+  on it. See [Consumers](#consumers).
+
+### How they connect
+
+| From → to                          | When                                                                                                                                          | Credential                                                                                                                                  | What crosses                                                                                            |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| protocol-internal → Worker         | A push to the release branch. A pull request into it opens, gets new commits, reopens or becomes ready for review. Someone re-runs the check. | `GITHUB_WEBHOOK_SECRET`. The Worker checks the HMAC signature of each event.                                                                | The event: the branch, the changed paths, and for a pull request its number and head commit             |
+| Worker → protocol-internal, reads  | Each run, and each event that asks for a preview                                                                                              | An installation token of the App. The Worker signs a JWT with `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY`, and exchanges it for the token. | The head of the release branch, `env/` at a commit, tags and their commits, the files of a pull request |
+| Worker → protocol-internal, writes | Each pull request preview                                                                                                                     | The same installation token                                                                                                                 | The "Registry preview" check run on the head commit of the pull request                                 |
+| protocol-internal → R2             | `build-abis.yml` runs for a pushed release tag, or by hand                                                                                    | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`, repository secrets of protocol-internal. They give access to this bucket only.               | `abis/<tag>/<Artifact>.json` and `abis/<tag>/manifest.json`                                             |
+| R2 → Worker                        | Each run                                                                                                                                      | The `REGISTRY_BUCKET` binding                                                                                                               | The ABI bundles                                                                                         |
+| IPFS gateways → Worker             | Each generate step                                                                                                                            | None                                                                                                                                        | The published layers, to walk the chain. R2 caches each layer by CID.                                   |
+| Worker → Pinata                    | Each publish run in `pin` or `live` mode                                                                                                      | `PINATA_JWT`                                                                                                                                | The new layer                                                                                           |
+| Worker → Cloudflare API            | Each run in `live` mode. Below `live`, the Worker reads the CID from public DNS.                                                              | `CLOUDFLARE_API_TOKEN`                                                                                                                      | The CID that the hostname serves. For a publish, also the new DNSLink `/ipfs/<cid>`.                    |
+| Worker → Slack                     | A publish run that publishes, refuses or fails                                                                                                | `SLACK_WEBHOOK_URL`                                                                                                                         | One message                                                                                             |
+
+The App sends its events to `POST /webhooks/github` on the `workers.dev` URL of the Worker. The App
+has Contents read, Pull requests read and Checks write. So the Worker can read protocol-internal and
+post check runs, but it cannot change the code or the files of protocol-internal. The App has no
+Actions permission, so the Worker cannot start or read the workflows of protocol-internal.
 
 ## A change, from deploy to published layer
 
