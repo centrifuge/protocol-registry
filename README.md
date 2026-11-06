@@ -27,32 +27,34 @@ registry format](docs/registry-format.md): schema, deltas, retirement and every 
 
 ## How it works
 
+protocol-internal holds the inputs. [docs/how-it-works.md](docs/how-it-works.md) shows both sides.
+
 ```
-GitHub App webhooks ──► Worker ──► Publisher (Durable Object, one publish at a time)
-  push to the release branch          │
-  pull request into it                ▼
-cron, every 6 hours              RegistryRun (Workflow, durable steps, each retried on its own)
-manual POST /runs                     1. the commit: the PR head, or the release branch head
-                                      2. env/ at that commit, checked: schema, retired.json, version tags
-                                      3. ABIs for every tag env uses, as protocol-internal built them
-                                      4. each network: walk the published chain, generate, validate
-                                      5a. preview → the PR's "Registry preview" check run
-                                      5b. publish → pin to Pinata, point the hostname's dnslink, Slack
+protocol-internal (GitHub App events)      this Worker
+  pull request into the release branch ──► preview run
+  push to the release branch ────────────► Publisher ──► publish run, one at a time
+                                           cron, every 6 hours ──► Publisher
+                                           manual POST /runs ──► preview run, or Publisher
+
+Each run is a RegistryRun (Workflow, durable steps, each retried on its own):
+  1. the commit: the PR head, or the release branch head
+  2. env/ at that commit, checked: schema, retired.json, version tags
+  3. ABIs for every tag env uses, from R2, where protocol-internal's build-abis.yml put them
+  4. each network: walk the published chain, generate, validate
+  5a. preview → the PR's "Registry preview" check run
+  5b. publish → pin to Pinata, point the hostname's dnslink, Slack
 ```
 
 - **Pushes** to the release branch (`SOURCE_BRANCH` in `wrangler.jsonc`) that touch `env/` start a
-  publish. A publish always generates from the branch head, so triggers that arrive while one runs
-  collapse into a single run after it.
+  publish. A publish generates from the branch head, so triggers during a run collapse into one.
 - **Pull requests** into the release branch that touch `env/` get a **Registry preview** check run on
   their head: the layer each network would get, its retirements, and every finding. It fails when the
   layer would break the indexer. Other PRs get no check at all, which is also why it cannot be a
   required check: a PR without one would wait on it forever.
-- **The cron** reconciles every six hours: a delivery GitHub dropped or a run that failed is retried
-  without anyone noticing it first. A run that finds nothing to publish says nothing, and one that
-  would say the same as the last cron run does not repeat itself.
+- **The cron** reconciles every six hours, so a dropped delivery or a failed run gets a retry. A run
+  with nothing to publish says nothing, and a cron run does not repeat the last cron message.
 - **Before swapping the dnslink**, a publish checks the hostname still serves the CID its layer was
-  built on. If anything else published in between, it stops and says so rather than orphaning that
-  layer.
+  built on. If anything else published in between, it stops rather than orphaning that layer.
 - **`PUBLISH_MODE`** decides how far a publish goes, one stage at a time:
 
   | Mode                                      | Generates | Pins to IPFS | Points the hostname | Needs                                |
@@ -61,10 +63,8 @@ manual POST /runs                     1. the commit: the PR head, or the release
   | `pin`                                     |     ✓     |      ✓       |                     | `PINATA_JWT`                         |
   | `live`                                    |     ✓     |      ✓       |          ✓          | `PINATA_JWT`, `CLOUDFLARE_API_TOKEN` |
 
-  A mode without its credentials refuses rather than doing less. Until `live`, the Worker does not
-  hold the Web3 hostname token at all (it reads the live CID from public DNS instead), so nothing it
-  does can change what registry.centrifuge.io serves. A pinned layer nothing points at is invisible to
-  consumers, which makes `pin` the place to inspect real output before going `live`.
+  A mode without its credentials refuses rather than doing less. Below `live`, the Worker does not
+  hold the Web3 hostname token, so it cannot change what the hostnames serve.
 
 The generator (`src/core/`) is a port of `script/registry/` from protocol-internal's `live-v3.3`, as
 of [centrifuge/protocol-internal#522](https://github.com/centrifuge/protocol-internal/pull/522),
