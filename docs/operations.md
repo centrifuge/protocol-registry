@@ -34,9 +34,53 @@ change, the layer compares against the wrong baseline.
 
 ## Manual runs
 
-`POST /runs` and `GET /status` take the bearer token `MANUAL_TRIGGER_TOKEN`, from the
-"protocol-registry Worker" 1Password Environment. `op run` gives the token to the command, and the
-token never reaches the terminal:
+The **Manual run** workflow of this repository starts a run without the token. Start it from the
+Actions tab, or with `gh`:
+
+```bash
+gh workflow run manual-run.yml -R centrifuge/protocol-registry -f kind=preview -f sha=<commit>
+```
+
+`gh run watch` then follows it in the terminal. The workflow does these steps:
+
+1. A publish waits until a reviewer of the `manual-publish` environment approves it. A preview
+   starts immediately.
+2. The job sends the inputs to `POST /runs`. The body omits each input that has its default value.
+3. The job follows the run for 30 minutes at most. Then it writes the report of the run to the job
+   summary.
+
+The inputs have the names of the fields in the table below. `networks` is `both` (the default),
+`mainnet` or `testnet`. The body omits an empty `sha` or `sourceCid`. The job fails in these cases:
+
+- The Worker refuses the inputs. The job shows the reason that the Worker gives.
+- The run stops with an error.
+- The report has an error, or a network that the run refused.
+- The run does not end in 30 minutes.
+
+The Publisher queues a publish behind its active run, and gives it no id. The job then finds the run
+in `GET /status` when it starts. A later manual publish replaces a queued one. The job then fails and
+names the publish that replaced it.
+
+The Actions run and the job summary name the person who started the run. The deployment history of
+`manual-publish` names the reviewer who approved a publish. The Slack message gives only the reason
+`manual`.
+
+The workflow reads a copy of `MANUAL_TRIGGER_TOKEN` from the `manual-runs` environment of this
+repository. That environment allows deployments from `main` only. So a workflow that someone changes
+on another branch cannot read the token. Each time the token changes in 1Password, set the copy
+again:
+
+```bash
+op run --environment weyggnasjjxhanfpqpxfpsl6za -- sh -c \
+  'printf %s "$MANUAL_TRIGGER_TOKEN" | gh secret set MANUAL_TRIGGER_TOKEN --env manual-runs -R centrifuge/protocol-registry'
+```
+
+The `manual-publish` environment holds no secret. Its required reviewers approve each publish. If it
+has no reviewers, a publish starts immediately.
+
+With the token, you can also call the Worker directly. `POST /runs` and `GET /status` take the bearer
+token `MANUAL_TRIGGER_TOKEN`, from the "protocol-registry Worker" 1Password Environment. `op run`
+gives the token to the command, and the token never reaches the terminal:
 
 ```bash
 H=https://centrifuge-protocol-registry.centrifuge-kf.workers.dev
@@ -69,19 +113,25 @@ A full snapshot resets the chain of a network, and only testnet is reset this wa
 - While a mainnet layer is live, validation refuses an unlinked mainnet layer (see
   [Indexer hard requirements](registry-format.md#indexer-hard-requirements)).
 
-To reset testnet:
+To reset testnet, start the workflow:
+
+```bash
+gh workflow run manual-run.yml -R centrifuge/protocol-registry -f kind=publish -f networks=testnet -f mode=full
+```
+
+Or use the token:
 
 ```bash
 curl -sX POST https://<host>/runs -H "Authorization: Bearer $TOKEN" \
   -d '{"kind":"publish","networks":["testnet"],"mode":"full"}'
 ```
 
-Add `"allowHistoryDrop": true` only when the snapshot drops live published contracts on purpose, for
-example in a switch to another deployment.
+Add `"allowHistoryDrop": true` (`-f allowHistoryDrop=true` in the workflow) only when the snapshot
+drops live published contracts on purpose, for example in a switch to another deployment.
 
 ## Following a run
 
-`POST /runs` answers with the run id. Then:
+The Manual run workflow follows its run itself. `POST /runs` answers with the run id. Then:
 
 - `GET /runs/<id>` gives the status and report of the run. `GET /runs/<id>/registry-<network>.json`
   and `.validation.json` give its layers and validation reports. R2 holds the same files under

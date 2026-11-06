@@ -395,7 +395,9 @@ them.
 
 ## Operations
 
-Manual runs and status need the bearer token (`MANUAL_TRIGGER_TOKEN`):
+Without the token, start a run with the Manual run workflow (see
+[Manual runs](docs/operations.md#manual-runs)). Manual runs and status through the Worker need the
+bearer token (`MANUAL_TRIGGER_TOKEN`):
 
 ```bash
 # What would be published from the release branch head, without publishing

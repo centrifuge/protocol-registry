@@ -1,0 +1,223 @@
+name: Manual run
+
+# Starts a Worker run (POST /runs) for people who do not hold MANUAL_TRIGGER_TOKEN, and follows it
+# to its end. The Worker checks the inputs: when it refuses them, the job fails with its reason.
+# See docs/operations.md, "Manual runs".
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "preview: generate and validate, publish nothing. publish: go through the Publisher, as far as PUBLISH_MODE allows."
+        type: choice
+        options: [preview, publish]
+        default: preview
+      networks:
+        description: The networks to generate
+        type: choice
+        options: [both, mainnet, testnet]
+        default: both
+      mode:
+        description: "auto, delta, patch, or full (testnet only: a full snapshot replaces the chain)"
+        type: choice
+        options: [auto, delta, patch, full]
+        default: auto
+      sha:
+        description: "Preview only: the protocol-internal commit to generate from. Empty: the release branch head."
+        type: string
+        default: ""
+      sourceCid:
+        description: "Build on this CID instead of the live layer. Needs one network."
+        type: string
+        default: ""
+      allowPartialChain:
+        description: Continue when the run cannot walk the whole chain
+        type: boolean
+        default: false
+      allowHistoryDrop:
+        description: Let a full snapshot drop published, unretired contracts
+        type: boolean
+        default: false
+
+permissions: {}
+
+env:
+  WORKER_URL: https://centrifuge-protocol-registry.centrifuge-kf.workers.dev
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  approve:
+    name: Approve the publish
+    if: inputs.kind == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The required reviewers of this environment approve each publish. The environment holds no secret.
+    environment: manual-publish
+    steps:
+      - run: echo "Publish by ${GITHUB_TRIGGERING_ACTOR} approved"
+
+  run:
+    name: Run
+    needs: approve
+    # A preview skips the approval. A rejected approval stops a publish.
+    if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    # The steps stop waiting after 30 minutes. This limit only catches a hung step.
+    timeout-minutes: 40
+    # The environment holds MANUAL_TRIGGER_TOKEN, and allows deployments only from main.
+    environment: manual-runs
+    steps:
+      - name: Write the authorization header
+        env:
+          MANUAL_TRIGGER_TOKEN: ${{ secrets.MANUAL_TRIGGER_TOKEN }}
+        run: |
+          if [ -z "${MANUAL_TRIGGER_TOKEN}" ]; then
+            echo "::error::MANUAL_TRIGGER_TOKEN is not set in the manual-runs environment"
+            exit 1
+          fi
+          # printf is a shell builtin, so the token is in no process's arguments
+          umask 077
+          printf 'Authorization: Bearer %s\n' "${MANUAL_TRIGGER_TOKEN}" > "${RUNNER_TEMP}/auth"
+          echo "DEADLINE=$(( $(date +%s) + 1800 ))" >> "${GITHUB_ENV}"
+
+      - name: Start the run
+        id: start
+        env:
+          KIND: ${{ inputs.kind }}
+          NETWORKS: ${{ inputs.networks }}
+          MODE: ${{ inputs.mode }}
+          SHA: ${{ inputs.sha }}
+          SOURCE_CID: ${{ inputs.sourceCid }}
+          ALLOW_PARTIAL_CHAIN: ${{ inputs.allowPartialChain }}
+          ALLOW_HISTORY_DROP: ${{ inputs.allowHistoryDrop }}
+        run: |
+          # The body omits each default, as the examples in docs/operations.md do
+          jq -n \
+            --arg kind "${KIND}" --arg networks "${NETWORKS}" --arg mode "${MODE}" --arg sha "${SHA}" \
+            --arg sourceCid "${SOURCE_CID}" --arg allowPartialChain "${ALLOW_PARTIAL_CHAIN}" \
+            --arg allowHistoryDrop "${ALLOW_HISTORY_DROP}" '
+              {kind: $kind}
+              + if $networks == "both" then {} else {networks: [$networks]} end
+              + if $mode == "auto" then {} else {mode: $mode} end
+              + if $sha == "" then {} else {sha: $sha} end
+              + if $sourceCid == "" then {} else {sourceCid: $sourceCid} end
+              + if $allowPartialChain == "true" then {allowPartialChain: true} else {} end
+              + if $allowHistoryDrop == "true" then {allowHistoryDrop: true} else {} end' \
+            > "${RUNNER_TEMP}/body.json"
+          echo "POST /runs $(jq -c . "${RUNNER_TEMP}/body.json"), started by ${GITHUB_TRIGGERING_ACTOR}"
+
+          echo "since=$(date +%s%3N)" >> "${GITHUB_OUTPUT}"
+          code=$(curl -sS --max-time 60 -X POST "${WORKER_URL}/runs" -H @"${RUNNER_TEMP}/auth" \
+            -H "Content-Type: application/json" --data-binary @"${RUNNER_TEMP}/body.json" \
+            -o "${RUNNER_TEMP}/start.json" -w '%{http_code}')
+          # The Worker answers 404 to a wrong token, so that the endpoint stays hidden
+          if [ "${code}" = 404 ]; then
+            echo "::error::The Worker did not accept MANUAL_TRIGGER_TOKEN from the manual-runs environment"
+            exit 1
+          fi
+          if [ "${code}" != 202 ]; then
+            reason=$(jq -r '.error // empty' "${RUNNER_TEMP}/start.json" 2>/dev/null || true)
+            [ -n "${reason}" ] || reason=$(head -c 500 "${RUNNER_TEMP}/start.json" | tr '\r\n' '  ')
+            echo "::error::The Worker refused the run (HTTP ${code}): ${reason}"
+            exit 1
+          fi
+
+          id=$(jq -r '.started // empty' "${RUNNER_TEMP}/start.json")
+          if [ -n "${id}" ]; then
+            echo "id=${id}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "The Publisher queued the publish behind its active run"
+          fi
+
+      # The Publisher gives a queued publish no id. The publish gets one when it starts, after the
+      # active run ends. This step finds it in GET /status by its parameters.
+      - name: Wait for the queued publish to start
+        id: queued
+        if: steps.start.outputs.id == ''
+        env:
+          SINCE: ${{ steps.start.outputs.since }}
+        run: |
+          want=$(jq -c '. + {reason: "manual"}' "${RUNNER_TEMP}/body.json")
+          while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+            sleep 30
+            curl -sS --fail-with-body --max-time 30 "${WORKER_URL}/status" -H @"${RUNNER_TEMP}/auth" \
+              -o "${RUNNER_TEMP}/status.json" || continue
+            id=$(jq -r --argjson want "${want}" --argjson since "${SINCE}" '
+              [.active // empty, .history[]]
+              | map(select(.params == $want and .startedAt >= $since))
+              | min_by(.startedAt) | .id // empty' "${RUNNER_TEMP}/status.json")
+            if [ -n "${id}" ]; then
+              echo "id=${id}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            # A later manual publish replaces a queued one, which then never starts
+            if jq -e --argjson want "${want}" \
+              '.pending != null and (.pending.reason | startswith("manual")) and .pending != $want' \
+              "${RUNNER_TEMP}/status.json" > /dev/null; then
+              echo "::error::A later manual publish replaced this one in the queue: $(jq -c .pending "${RUNNER_TEMP}/status.json")"
+              exit 1
+            fi
+            echo "$(date -u +%H:%M:%S) queued behind $(jq -r '.active.id // "a run that is ending"' "${RUNNER_TEMP}/status.json")"
+          done
+          echo "::error::The queued publish did not start within 30 minutes. Slack reports it when it ends."
+          exit 1
+
+      - name: Follow the run
+        env:
+          KIND: ${{ inputs.kind }}
+          RUN_ID: ${{ steps.queued.outputs.id || steps.start.outputs.id }}
+        run: |
+          echo "Run ${RUN_ID}"
+          status=unknown
+          while :; do
+            if curl -sS --fail-with-body --max-time 30 "${WORKER_URL}/runs/${RUN_ID}" \
+              -H @"${RUNNER_TEMP}/auth" -o "${RUNNER_TEMP}/run.json"; then
+              status=$(jq -r .status "${RUNNER_TEMP}/run.json")
+              echo "$(date -u +%H:%M:%S) ${status}"
+              case "${status}" in complete | errored | terminated) break ;; esac
+            fi
+            [ "$(date +%s)" -lt "${DEADLINE}" ] || break
+            sleep 20
+          done
+
+          [ -f "${RUNNER_TEMP}/run.json" ] || echo '{}' > "${RUNNER_TEMP}/run.json"
+          {
+            echo "### Registry ${KIND} \`${RUN_ID}\`: ${status}"
+            echo
+            echo "Started by @${GITHUB_TRIGGERING_ACTOR} with \`$(jq -c . "${RUNNER_TEMP}/body.json")\`."
+            jq -r '.output.sha // empty | "Generated from protocol-internal `\(.)`."' "${RUNNER_TEMP}/run.json"
+            echo
+            jq -r '.error.message // empty | "**Error:** \(.)"' "${RUNNER_TEMP}/run.json"
+            jq -r '.output.published[]? | "- **\(.network)**: " + if .served
+              then "published `\(.cid)`" else "pinned `\(.cid)`, not served (PUBLISH_MODE is pin)" end' \
+              "${RUNNER_TEMP}/run.json"
+            jq -r '.output.shadow[]? | "- **\(.)**: would publish (PUBLISH_MODE is shadow)"' \
+              "${RUNNER_TEMP}/run.json"
+            echo
+            jq -r '.report // empty' "${RUNNER_TEMP}/run.json"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          case "${status}" in
+            complete)
+              if ! jq -e '(.output.envProblems | length) == 0 and all(.output.outcomes[]?;
+                (.refused | not) and ((.validation.errors // []) | length) == 0)' \
+                "${RUNNER_TEMP}/run.json" > /dev/null; then
+                echo "::error::The run found errors or refused a layer. The job summary has its report."
+                exit 1
+              fi
+              ;;
+            errored | terminated)
+              message=$(jq -r '.error.message // "no error message"' "${RUNNER_TEMP}/run.json")
+              message=${message//'%'/'%25'}
+              message=${message//$'\r'/'%0D'}
+              message=${message//$'\n'/'%0A'}
+              echo "::error::Run ${RUN_ID} ${status}: ${message}"
+              exit 1
+              ;;
+            *)
+              echo "::error::Run ${RUN_ID} is still ${status} after 30 minutes. GET /runs/${RUN_ID} gives its report when it ends. Slack also reports a publish."
+              exit 1
+              ;;
+          esac
