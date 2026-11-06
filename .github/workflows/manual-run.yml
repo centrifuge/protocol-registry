@@ -67,14 +67,14 @@ jobs:
     # The steps stop waiting after 30 minutes. This limit only catches a hung step.
     timeout-minutes: 40
     # The environment holds MANUAL_TRIGGER_TOKEN, and allows deployments only from main.
-    environment: manual-runs
+    environment: manual-triggers
     steps:
       - name: Write the authorization header
         env:
           MANUAL_TRIGGER_TOKEN: ${{ secrets.MANUAL_TRIGGER_TOKEN }}
         run: |
           if [ -z "${MANUAL_TRIGGER_TOKEN}" ]; then
-            echo "::error::MANUAL_TRIGGER_TOKEN is not set in the manual-runs environment"
+            echo "::error::MANUAL_TRIGGER_TOKEN is not set in the manual-triggers environment"
             exit 1
           fi
           # printf is a shell builtin, so the token is in no process's arguments
@@ -114,7 +114,7 @@ jobs:
             -o "${RUNNER_TEMP}/start.json" -w '%{http_code}')
           # The Worker answers 404 to a wrong token, so that the endpoint stays hidden
           if [ "${code}" = 404 ]; then
-            echo "::error::The Worker did not accept MANUAL_TRIGGER_TOKEN from the manual-runs environment"
+            echo "::error::The Worker did not accept MANUAL_TRIGGER_TOKEN from the manual-triggers environment"
             exit 1
           fi
           if [ "${code}" != 202 ]; then
