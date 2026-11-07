@@ -29,6 +29,16 @@ test("fetchRegistryFromIpfs tries gateways in order and returns the first succes
   assert.ok(calls[0].startsWith(IPFS_GATEWAYS[0]));
 });
 
+test("fetchRegistryFromIpfs falls through a failing gateway to the next", async () => {
+  const document = layer({ chains: { 1: chain({ hub: "0xhub" }) } });
+  const { fetchImpl, calls } = fakeFetch({ cid1: document }, { failGateways: [IPFS_GATEWAYS[0]] });
+
+  const result = await fetchRegistryFromIpfs("cid1", { fetchImpl });
+
+  assert.equal(result.chains["1"].contracts.hub.address, "0xhub");
+  assert.deepEqual(calls, [`${IPFS_GATEWAYS[0]}cid1`, `${IPFS_GATEWAYS[1]}cid1`]);
+});
+
 test("fetchRegistryFromIpfs aggregates every gateway failure in the thrown error", async () => {
   const { fetchImpl, calls } = fakeFetch({}, { failGateways: IPFS_GATEWAYS, failStatus: 429 });
 
