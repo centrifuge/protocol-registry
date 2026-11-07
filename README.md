@@ -377,7 +377,9 @@ run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 NODE_SHIMS_MODE=local scripts/deploy.sh --profile centrifuge-prod
 ```
 
-**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later:
+**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later.
+`REGISTRY_OP_ENVIRONMENT` holds the Environment's ID (in the 1Password app: Developer > View
+Environments > Manage environment > Copy environment ID):
 
 ```bash
 NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod

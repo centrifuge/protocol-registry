@@ -36,11 +36,12 @@ change, the layer compares against the wrong baseline.
 
 `POST /runs` and `GET /status` take the bearer token `MANUAL_TRIGGER_TOKEN`, from the
 "protocol-registry Worker" 1Password Environment. `op run` gives the token to the command, and the
-token never reaches the terminal. `<host>` is the URL of the Worker (see the README's Setup section):
+token never reaches the terminal. `REGISTRY_OP_ENVIRONMENT` holds the ID of that Environment, as for
+`scripts/push-secrets.sh`. `<host>` is the URL of the Worker (see the README's Setup section):
 
 ```bash
 H=https://<host>
-op run --environment weyggnasjjxhanfpqpxfpsl6za -- sh -c \
+op run --environment "$REGISTRY_OP_ENVIRONMENT" -- sh -c \
   "curl -sX POST $H/runs -H \"Authorization: Bearer \$MANUAL_TRIGGER_TOKEN\" -d '{\"kind\":\"preview\"}'"
 ```
 
@@ -224,7 +225,7 @@ every layer against its CID.
 These read-only calls prove that the credentials work. They pin nothing and change no hostname:
 
 ```bash
-op run --environment weyggnasjjxhanfpqpxfpsl6za --env-file .env.1password -- sh -c '
+op run --environment "$REGISTRY_OP_ENVIRONMENT" --env-file .env.1password -- sh -c '
   curl -s https://api.pinata.cloud/data/testAuthentication -H "Authorization: Bearer $PINATA_JWT"
   curl -s https://api.cloudflare.com/client/v4/zones/<zone-id>/web3/hostnames \
     -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" | jq ".result[] | {id, name, status, dnslink}"'
