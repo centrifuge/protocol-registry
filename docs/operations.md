@@ -100,18 +100,11 @@ tag (see [ABIs](#abis)).
 
 ## Changing `PUBLISH_MODE`
 
-The mode is in `wrangler.jsonc`, so a pull request changes it. A merge to `main` deploys the Worker
-with the new mode. So upload the secrets before you merge. To move the mode up:
-
-1. Open the pull request that changes `PUBLISH_MODE` in `wrangler.jsonc`.
-2. From a checkout of that pull request's branch, run
-   `NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod`. The script reads the
-   mode from `wrangler.jsonc` and uploads the credentials it needs: `PINATA_JWT` for `pin`, and also
-   `CLOUDFLARE_API_TOKEN` for `live`. On `main`, the script reads the old mode.
-3. Merge the pull request. The "Deploy" workflow deploys the Worker with the new mode.
-
-Upload the secrets before the merge, so the Worker holds a credential before its mode uses it. A mode
-whose credentials are missing fails every publish run.
+The mode is in `wrangler.jsonc`, so a pull request changes it. The merge deploys the Worker with the
+new mode. A mode needs its credentials: `PINATA_JWT` for `pin`, and also `CLOUDFLARE_API_TOKEN` for
+`live`. A mode whose credentials are missing fails every publish run. If the Worker does not hold one
+of them, run `NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod` from the pull
+request's branch before you merge.
 
 When you move the mode down, the uploaded credentials stay on the Worker. Remove one with
 `wrangler secret delete`. If the mode change must act on a publish right away, start a manual

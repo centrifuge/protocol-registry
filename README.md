@@ -397,10 +397,9 @@ in `shadow`, `PINATA_JWT` too in `pin`, and the Web3 hostnames token too in `liv
 in the ops-v3 item `.env.1password` references, where its reconciler rotates it.
 
 Variables live in `wrangler.jsonc`. A change to one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
-the cutover) is a pull request, and its merge deploys it. To move `PUBLISH_MODE` up, run
-`push-secrets.sh` from the pull request's branch before you merge. The script reads the mode from
-`wrangler.jsonc`, so the Worker holds the new credential before the mode that uses it. Only the first
-deploy comes before the secrets, so there is a Worker to hold them.
+the cutover) is a pull request, and its merge deploys it. See
+[Changing `PUBLISH_MODE`](docs/operations.md#changing-publish_mode). Only the first deploy comes
+before the secrets, so there is a Worker to hold them.
 
 ## Operations
 

@@ -264,7 +264,7 @@ true.
   `scripts/push-secrets.sh` uploads it. After you rotate a secret, run the script again. A mode that
   misses its credential fails every publish run. It does not do less instead.
 - **A merge to `main` deploys.** The "Deploy" workflow runs `scripts/deploy.sh` in the `production`
-  environment. Upload the secrets that a change needs before you merge the change.
+  environment.
 - **The GitHub App stays installed on protocol-internal,** with the webhook secret that the Worker
   holds. Without its events, previews stop, and publishing waits for the cron every six hours.
 
