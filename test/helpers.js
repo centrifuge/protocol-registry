@@ -63,9 +63,10 @@ export function layer({
 }
 
 /**
- * Builds a fetch-shaped function serving documents by CID, with failure injection.
+ * Builds a fetch-shaped function serving bytes by CID from every gateway, with failure injection.
+ * The IPFS client verifies what it is served, so a layer is served under its real CID.
  *
- * @param {Object} cidMap - CID → document (or Error to throw for that CID)
+ * @param {Object} cidMap - CID → the bytes to serve (or an Error to throw for that CID)
  * @param {Object} [options]
  * @param {string[]} [options.failGateways] - Gateway substrings that always fail
  * @param {number} [options.failStatus] - Status returned by failing gateways (default 500)
@@ -79,20 +80,15 @@ export function fakeFetch(cidMap, options = {}) {
     calls.push(url);
 
     if (failGateways.some((gateway) => url.includes(gateway))) {
-      return { ok: false, status: failStatus, statusText: "Injected failure" };
+      return new Response(null, { status: failStatus, statusText: "Injected failure" });
     }
 
     const cid = url.split("/").pop();
-    const document = cidMap[cid];
-    if (document instanceof Error) throw document;
-    if (!document) return { ok: false, status: 404, statusText: "Not Found" };
+    const bytes = cidMap[cid];
+    if (bytes instanceof Error) throw bytes;
+    if (!bytes) return new Response(null, { status: 404, statusText: "Not Found" });
 
-    return {
-      ok: true,
-      status: 200,
-      json: async () => structuredClone(document),
-      text: async () => JSON.stringify(document),
-    };
+    return new Response(bytes);
   }
 
   return { fetchImpl, calls };

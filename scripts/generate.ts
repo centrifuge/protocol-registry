@@ -75,11 +75,11 @@ function directoryCache(dir: string): LayerCache {
   return {
     get: async (cid) => {
       const path = join(dir, `${cid}.json`);
-      return existsSync(path) ? readFileSync(path, "utf8") : null;
+      return existsSync(path) ? readFileSync(path) : null;
     },
-    put: async (cid, text) => {
+    put: async (cid, bytes) => {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, `${cid}.json`), text);
+      writeFileSync(join(dir, `${cid}.json`), bytes);
     },
   };
 }

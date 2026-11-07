@@ -1,7 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
+import { layerFromBytes } from "../src/core/verify.ts";
 import { IPFS_GATEWAYS, fetchRegistryFromIpfs, isValidIpfsHash } from "../src/io/ipfs.ts";
-import { chain, fakeFetch, layer, memoryCache } from "./helpers.js";
+import {
+  MAINNET_HEAD,
+  MAINNET_HEAD_PARENT,
+  fakeFetch,
+  flipByte,
+  memoryCache,
+  realLayerBytes,
+} from "./helpers.js";
+
+const headBytes = realLayerBytes(MAINNET_HEAD);
+const head = await layerFromBytes(MAINNET_HEAD, headBytes);
+const urlsOf = (gateways) => gateways.map((gateway) => `${gateway}${MAINNET_HEAD}`);
 
 test("gateway list has no retired gateways and leads with Centrifuge's own", () => {
   // cloudflare-ipfs.com was retired in 2024; a dead entry costs a timeout on every fetch.
@@ -19,25 +32,42 @@ test("isValidIpfsHash accepts v0 and v1 CIDs and rejects other strings", () => {
 });
 
 test("fetchRegistryFromIpfs tries gateways in order and returns the first success", async () => {
-  const document = layer({ chains: { 1: chain({ hub: "0xhub" }) } });
-  const { fetchImpl, calls } = fakeFetch({ cid1: document });
+  const { fetchImpl, calls } = fakeFetch({ [MAINNET_HEAD]: headBytes });
 
-  const result = await fetchRegistryFromIpfs("cid1", { fetchImpl });
+  const result = await fetchRegistryFromIpfs(MAINNET_HEAD, { fetchImpl });
 
-  assert.equal(result.chains["1"].contracts.hub.address, "0xhub");
-  assert.equal(calls.length, 1, "stops at the first gateway that works");
-  assert.ok(calls[0].startsWith(IPFS_GATEWAYS[0]));
+  assert.deepEqual(result, head);
+  assert.deepEqual(
+    calls,
+    urlsOf(IPFS_GATEWAYS.slice(0, 1)),
+    "stops at the first gateway that works",
+  );
 });
 
-test("fetchRegistryFromIpfs falls through a failing gateway to the next", async () => {
-  const document = layer({ chains: { 1: chain({ hub: "0xhub" }) } });
-  const { fetchImpl, calls } = fakeFetch({ cid1: document }, { failGateways: [IPFS_GATEWAYS[0]] });
+// A gateway can serve anything for a CID. Each of these is skipped like a gateway that is down.
+const FIRST_GATEWAY_FAULTS = [
+  ["answers 500", () => new Response(null, { status: 500 })],
+  ["serves the layer with a byte flipped", () => new Response(flipByte(headBytes, 10))],
+  ["serves another layer", () => new Response(realLayerBytes(MAINNET_HEAD_PARENT))],
+  ["serves an error page", () => new Response("<html>rate limited</html>")],
+];
 
-  const result = await fetchRegistryFromIpfs("cid1", { fetchImpl });
+for (const [name, firstResponse] of FIRST_GATEWAY_FAULTS) {
+  test(`fetchRegistryFromIpfs skips a gateway that ${name}`, async () => {
+    const cache = memoryCache();
+    const calls = [];
+    const fetchImpl = async (url) => {
+      calls.push(url);
+      return url.startsWith(IPFS_GATEWAYS[0]) ? firstResponse() : new Response(headBytes);
+    };
 
-  assert.equal(result.chains["1"].contracts.hub.address, "0xhub");
-  assert.deepEqual(calls, [`${IPFS_GATEWAYS[0]}cid1`, `${IPFS_GATEWAYS[1]}cid1`]);
-});
+    const result = await fetchRegistryFromIpfs(MAINNET_HEAD, { fetchImpl, cache });
+
+    assert.deepEqual(result, head);
+    assert.deepEqual(calls, urlsOf(IPFS_GATEWAYS.slice(0, 2)));
+    assert.deepEqual(cache.store.get(MAINNET_HEAD), headBytes, "only verified bytes are cached");
+  });
+}
 
 test("fetchRegistryFromIpfs aggregates every gateway failure in the thrown error", async () => {
   const { fetchImpl, calls } = fakeFetch({}, { failGateways: IPFS_GATEWAYS, failStatus: 429 });
@@ -47,52 +77,68 @@ test("fetchRegistryFromIpfs aggregates every gateway failure in the thrown error
     (error) => {
       assert.match(error.message, /could not fetch cidX from any gateway/);
       assert.match(error.message, /429/);
+      assert.ok(!(error instanceof LayerVerificationError), "an outage is not a verdict on bytes");
       return true;
     },
   );
   assert.equal(calls.length, IPFS_GATEWAYS.length, "tried every gateway before giving up");
 });
 
+test("fetchRegistryFromIpfs throws a LayerVerificationError when no gateway serves matching bytes", async () => {
+  // Bytes that do not match are evidence against the layer, not an outage: the chain walk makes a
+  // LayerVerificationError fatal, so allowPartialChain cannot generate past a forged layer.
+  const cache = memoryCache();
+  const { fetchImpl, calls } = fakeFetch(
+    { [MAINNET_HEAD]: flipByte(headBytes, 10) },
+    { failGateways: [IPFS_GATEWAYS[1]], failStatus: 429 },
+  );
+
+  await assert.rejects(
+    () => fetchRegistryFromIpfs(MAINNET_HEAD, { fetchImpl, cache }),
+    (error) => {
+      assert.ok(error instanceof LayerVerificationError, `got ${error}`);
+      assert.equal(error.cid, MAINNET_HEAD);
+      assert.match(error.message, /no gateway served matching bytes/);
+      assert.match(error.message, /429/);
+      return true;
+    },
+  );
+  assert.equal(calls.length, IPFS_GATEWAYS.length, "tried every gateway before giving up");
+  assert.equal(cache.store.size, 0, "tampered bytes never enter the cache");
+});
+
 test("fetchRegistryFromIpfs writes a fetched layer to the cache and then serves it without fetching", async () => {
   const cache = memoryCache();
-  const document = layer({ version: "v9", chains: { 1: chain({ hub: "0xhub" }) } });
-  const { fetchImpl, calls } = fakeFetch({ cid1: document });
+  const { fetchImpl, calls } = fakeFetch({ [MAINNET_HEAD]: headBytes });
 
-  const first = await fetchRegistryFromIpfs("cid1", { fetchImpl, cache });
+  const first = await fetchRegistryFromIpfs(MAINNET_HEAD, { fetchImpl, cache });
   assert.equal(calls.length, 1);
-  assert.deepEqual([...cache.store.keys()], ["cid1"], "layer was cached under its CID");
+  assert.deepEqual([...cache.store.keys()], [MAINNET_HEAD], "layer was cached under its CID");
 
-  const second = await fetchRegistryFromIpfs("cid1", { fetchImpl, cache });
+  const second = await fetchRegistryFromIpfs(MAINNET_HEAD, { fetchImpl, cache });
   assert.equal(calls.length, 1, "cache hit performs no fetch");
   assert.deepEqual(second, first);
 });
 
-test("fetchRegistryFromIpfs refetches when a cached layer is corrupt", async () => {
-  const cache = memoryCache({ cid1: "{ truncated" });
-  const document = layer({ version: "v9", chains: {} });
-  const { fetchImpl, calls } = fakeFetch({ cid1: document });
+// The cache is not trusted either: an entry that does not verify is fetched again and overwritten.
+const POISONED_ENTRIES = [
+  ["the layer with a byte flipped", () => flipByte(headBytes, 10)],
+  ["another layer", () => realLayerBytes(MAINNET_HEAD_PARENT)],
+  ["a truncated write", () => headBytes.subarray(0, 100)],
+];
 
-  const result = await fetchRegistryFromIpfs("cid1", { fetchImpl, cache });
+for (const [name, poisoned] of POISONED_ENTRIES) {
+  test(`fetchRegistryFromIpfs replaces a cache entry holding ${name}`, async () => {
+    const cache = memoryCache({ [MAINNET_HEAD]: poisoned() });
+    const { fetchImpl, calls } = fakeFetch({ [MAINNET_HEAD]: headBytes });
 
-  assert.equal(result.version, "v9");
-  assert.equal(calls.length, 1, "a corrupt cache entry is a miss, not a failure");
-});
+    const result = await fetchRegistryFromIpfs(MAINNET_HEAD, { fetchImpl, cache });
 
-test("fetchRegistryFromIpfs rejects a document that is not a registry layer", async () => {
-  // A gateway can serve anything for a CID — an error page rendered as JSON, or a different
-  // pinned file. Accepting it would flatten as an empty layer, understating published state.
-  const { fetchImpl } = fakeFetch({ cid1: { error: "no such pin" } });
-
-  await assert.rejects(() => fetchRegistryFromIpfs("cid1", { fetchImpl }), /no "chains" object/);
-});
-
-test("fetchRegistryFromIpfs does not cache a non-registry document", async () => {
-  const cache = memoryCache();
-  const { fetchImpl } = fakeFetch({ cid1: ["not", "a", "registry"] });
-
-  await assert.rejects(() => fetchRegistryFromIpfs("cid1", { fetchImpl, cache }));
-  assert.equal(cache.store.size, 0, "junk must not enter the layer cache");
-});
+    assert.deepEqual(result, head);
+    assert.equal(calls.length, 1, "fetched again from a gateway");
+    assert.deepEqual(cache.store.get(MAINNET_HEAD), headBytes, "overwritten with verified bytes");
+  });
+}
 
 test("fetchRegistryFromIpfs refuses a CID that would escape the layer cache", async () => {
   // Chain pointers are read from published layers, so a CID is not guaranteed to be well-formed.
@@ -111,24 +157,11 @@ test("fetchRegistryFromIpfs refuses a CID that would escape the layer cache", as
   assert.equal(cache.store.size, 0, "nothing was written to the cache");
 });
 
-test("fetchRegistryFromIpfs treats a cached non-registry document as a miss", async () => {
-  // Guards cache entries written before the shape check existed.
-  const cache = memoryCache({ cid1: JSON.stringify({ detail: "gateway error" }) });
-  const document = layer({ version: "v9", chains: { 1: chain({ hub: "0xhub" }) } });
-  const { fetchImpl, calls } = fakeFetch({ cid1: document });
-
-  const result = await fetchRegistryFromIpfs("cid1", { fetchImpl, cache });
-
-  assert.equal(result.version, "v9");
-  assert.equal(calls.length, 1);
-});
-
 test("fetchRegistryFromIpfs keeps integers above 2^53 exact", async () => {
   // chainSelector values exceed what a double holds; a plain JSON.parse would publish them corrupted.
-  const text = '{"chains":{"1":{"adapters":{"chainlink":{"chainSelector":5009297550715157269}}}}}';
-  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => text });
+  const { fetchImpl } = fakeFetch({ [MAINNET_HEAD]: headBytes });
 
-  const result = await fetchRegistryFromIpfs("cid1", { fetchImpl });
+  const result = await fetchRegistryFromIpfs(MAINNET_HEAD, { fetchImpl });
 
-  assert.equal(JSON.stringify(result), text);
+  assert.match(JSON.stringify(result), /"chainSelector":11344663589394136015[,}]/);
 });

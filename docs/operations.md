@@ -238,6 +238,8 @@ write would change what a hostname serves.
 The contents of a CID never change, so the Worker caches every fetched layer by CID. The Worker uses
 `layers/<cid>.json` in R2. Local runs use `cache/registry-chain/<cid>.json`. Delete that directory to
 fetch the layers again. With the cache, a walk costs one fetch per layer published since the last run.
+An entry holds the bytes that a gateway served. Each read checks them against the CID, so a damaged
+entry is a miss, and the next fetch overwrites it.
 The Worker also caches protocol-internal's `env/` by commit, at `snapshots/<sha>.json` in R2.
 
 ## From protocol-internal's scripts

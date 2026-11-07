@@ -1,19 +1,23 @@
 /**
  * Reading published registry layers from IPFS.
  *
- * Every reader of a published layer goes through here: CID validation, the multi-gateway fetch, and
- * the layer cache. Keeping one copy matters because the gateway list rots (cloudflare-ipfs.com was
- * retired in 2024) and a caller left holding a stale copy fails in a way that looks like IPFS being
- * down.
+ * Every reader of a published layer goes through here: CID validation, the multi-gateway fetch, the
+ * check of each layer's bytes against its CID, and the layer cache. Keeping one copy matters because
+ * the gateway list rots (cloudflare-ipfs.com was retired in 2024) and a caller left holding a stale
+ * copy fails in a way that looks like IPFS being down.
  *
  * Published layers are content-addressed, so a CID's contents can never change, and a cached layer is
  * valid forever — without the cache a chain walk re-fetches every layer on every run (testnet is ~50
  * layers) and public gateways rate-limit.
+ *
+ * Neither a gateway nor the cache is trusted with the bytes. A forged ancestor would have the
+ * generator measure its delta against state nobody published, so every layer, wherever it came from,
+ * is verified against the CID it was asked for before it is parsed.
  */
 
-import { isRegistryDocument } from "../core/chain.ts";
-import { parseJson } from "../core/json.ts";
+import { LayerVerificationError } from "../core/layer-verification-error.ts";
 import type { Layer } from "../core/types.ts";
+import { layerFromBytes } from "../core/verify.ts";
 
 /**
  * IPFS gateways to try, in order. Centrifuge's dedicated Pinata gateway first (registries are pinned
@@ -29,10 +33,13 @@ export const IPFS_GATEWAYS = [
 
 const FETCH_TIMEOUT_MS = 20000;
 
-/** Where fetched layers are kept, by CID. R2 in the Worker, a directory for local runs. */
+/**
+ * Where fetched layers are kept, by CID, as the bytes a gateway served: verification needs them
+ * exactly. R2 in the Worker, a directory for local runs.
+ */
 export interface LayerCache {
-  get(cid: string): Promise<string | null>;
-  put(cid: string, text: string): Promise<void>;
+  get(cid: string): Promise<Uint8Array | null>;
+  put(cid: string, bytes: Uint8Array): Promise<void>;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -70,22 +77,28 @@ export interface FetchLayerOptions {
   log?: (message: string) => void;
 }
 
-/** Reads a cached layer, or null on a miss. A corrupt entry is a miss, so it cannot poison later runs. */
+/**
+ * Reads a cached layer, or null on a miss. An entry that does not verify against its CID is a miss:
+ * the gateway fetch that follows overwrites it, so a corrupt or poisoned entry cannot outlive a run
+ * that can reach IPFS.
+ */
 async function readCachedLayer(cache: LayerCache, cid: string): Promise<Layer | null> {
   try {
-    const text = await cache.get(cid);
-    if (text == null) return null;
-    const cached = parseJson(text);
-    return isRegistryDocument(cached) ? cached : null;
+    const bytes = await cache.get(cid);
+    return bytes == null ? null : await layerFromBytes(cid, bytes);
   } catch {
     return null;
   }
 }
 
 /**
- * Fetches a single registry document from IPFS, trying each gateway in turn.
+ * Fetches a single registry layer from the cache, or from IPFS trying each gateway in turn. Either
+ * way the bytes are verified against `cid` with `layerFromBytes` before they are parsed: a gateway
+ * serving other bytes is skipped like one that is down, and only verified bytes are cached.
  *
- * @throws If every gateway fails, or the CID is not a plain CID
+ * @throws {LayerVerificationError} If no gateway served matching bytes and at least one served
+ *   other bytes. A chain walk makes it fatal: evidence against the layer, not an outage
+ * @throws If every gateway fails otherwise, or the CID is not a plain CID
  */
 export async function fetchRegistryFromIpfs(
   cid: string,
@@ -114,6 +127,7 @@ export async function fetchRegistryFromIpfs(
   }
 
   const failures: string[] = [];
+  let mismatched = false;
 
   for (const gateway of gateways) {
     try {
@@ -126,28 +140,27 @@ export async function fetchRegistryFromIpfs(
         await discardBody(response);
         continue;
       }
-      const text = await response.text();
-      const document = parseJson(text);
-      // A gateway can serve anything for a CID (an error page rendered as JSON, a different pinned
-      // file). Reject non-registry documents here so they neither enter the layer cache nor get
-      // flattened as an empty layer — which would silently understate the published state and
-      // inflate the delta.
-      if (!isRegistryDocument(document)) {
-        failures.push(`${gateway} → served a document with no "chains" object`);
-        continue;
-      }
+      // A gateway can serve anything for a CID: an error page, a different pinned file, a forged
+      // layer. layerFromBytes refuses all of them, so none enters the cache or the walk.
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const document = await layerFromBytes(cid, bytes);
       log(`  Layer ${cid} — fetched from ${gateway}`);
       if (cache) {
         // Caching is an optimization; a failed write must not fail the fetch that already succeeded.
-        await cache.put(cid, text).catch(() => {});
+        await cache.put(cid, bytes).catch(() => {});
       }
       return document;
     } catch (error) {
+      if (error instanceof LayerVerificationError) mismatched = true;
       failures.push(`${gateway} → ${(error as Error).message}`);
     }
   }
 
-  throw new Error(`could not fetch ${cid} from any gateway (${failures.join("; ")})`);
+  const tried = failures.join("; ");
+  if (mismatched) {
+    throw new LayerVerificationError(cid, `no gateway served matching bytes (${tried})`);
+  }
+  throw new Error(`could not fetch ${cid} from any gateway (${tried})`);
 }
 
 /** Releases a response body we are not going to read, never throwing over it. */
