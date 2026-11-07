@@ -4,7 +4,20 @@ import type { Logger } from "./core/generate.ts";
 import type { Network } from "./core/types.ts";
 import { githubApp, type GitHub } from "./io/github.ts";
 import { web3Gateway } from "./io/publish.ts";
-import type { RunConfig } from "./run.ts";
+import type { Publisher } from "./publisher.ts";
+import type { HostnameRecords, RunConfig } from "./run.ts";
+
+// `wrangler types` without the runtime types leaves the namespace untyped
+export const publisher = (env: Env) =>
+  (env.PUBLISHER as DurableObjectNamespace<Publisher>).getByName("publisher");
+
+function hostnameRecords(env: Env): HostnameRecords {
+  const stub = publisher(env);
+  return {
+    get: (network) => stub.hostnameRecord(network),
+    put: (network, record) => stub.putHostnameRecord(network, record),
+  };
+}
 
 export function github(env: Env): GitHub {
   return githubApp({
@@ -34,6 +47,7 @@ export function runConfig(env: Env, log: Logger = consoleLogger): RunConfig {
       : null,
     sourceRepo: env.SOURCE_REPO,
     hostnames: hostnames(env),
+    hostnameRecords: hostnameRecords(env),
     pinataJwt: env.PINATA_JWT ?? null,
     log,
   };

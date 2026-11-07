@@ -18,6 +18,8 @@ export interface RetiredRow {
 /** One network's result, small enough to pass between workflow steps. */
 export interface NetworkOutcome {
   network: Network;
+  /** The hostname serves a CID the Worker did not publish (HostnameCheck.drift): it is not published. */
+  hostnameDrift?: string;
   /** Generation stopped on purpose (RefusedError), with why. */
   refused?: string;
   summary?: GenerateSummary;
@@ -25,6 +27,42 @@ export interface NetworkOutcome {
   previousVersion?: string | null;
   contractsInLayer?: number;
   retired?: RetiredRow[];
+}
+
+/** What a run found on one network's hostname before anything else (see checkHostname). */
+export interface HostnameCheck {
+  network: Network;
+  liveCid: string | null;
+  /** Why the network must not publish: its hostname serves a CID the Worker did not publish. */
+  drift: string | null;
+  /** The run recorded the live CID as the Worker's own: first live run, or an operator's acceptance. */
+  recorded: "seeded" | "accepted" | null;
+}
+
+/**
+ * The Slack message a publish run posts once it has checked the hostnames, before it reads env/ or
+ * waits on ABIs, so a hostname changed outside the Worker reaches the channel on every run until
+ * someone acts. A record the run wrote is announced too. Empty when there is nothing to say.
+ */
+export function hostnameReport(checks: HostnameCheck[], hostnames: Record<Network, string>) {
+  return checks
+    .flatMap(({ network, liveCid, drift, recorded }) => {
+      const hostname = hostnames[network];
+      if (drift)
+        return [`:rotating_light: *Registry hostname changed outside the Worker*\n>${drift}`];
+      if (recorded === "seeded") {
+        return [
+          `:information_source: *${network}*: no CID was recorded for ${hostname}, so this run recorded the one it serves, \`${liveCid}\`. A CID the Worker did not publish now stops ${network} from publishing.`,
+        ];
+      }
+      if (recorded === "accepted") {
+        return [
+          `:white_check_mark: *${network}*: accepted \`${liveCid}\`, which ${hostname} serves, as the CID to publish on.`,
+        ];
+      }
+      return [];
+    })
+    .join("\n");
 }
 
 export function retiredRows(registry: Layer): RetiredRow[] {
@@ -65,6 +103,7 @@ function modeLabel(outcome: NetworkOutcome): string {
 /** The Registry Preview section for one network, as the PR comment it replaces laid it out. */
 export function networkMarkdown(outcome: NetworkOutcome): string {
   let body = `### ${outcome.network}\n\n`;
+  if (outcome.hostnameDrift) body += `🚨 **Hostname:** ${outcome.hostnameDrift}\n\n`;
   if (outcome.refused) {
     return `${body}❌ **Refused:** ${outcome.refused.replace(/\n/g, "\n> ")}\n\n`;
   }
@@ -120,7 +159,9 @@ export function networkMarkdown(outcome: NetworkOutcome): string {
 }
 
 export function hasErrors(outcomes: NetworkOutcome[]): boolean {
-  return outcomes.some((o) => o.refused || (o.validation?.errors.length ?? 0) > 0);
+  return outcomes.some(
+    (o) => o.hostnameDrift || o.refused || (o.validation?.errors.length ?? 0) > 0,
+  );
 }
 
 /**
@@ -135,6 +176,7 @@ export function toPublish<T extends NetworkOutcome & { publishable: boolean }>(o
 export function headline(outcomes: NetworkOutcome[]): string {
   return outcomes
     .map((o) => {
+      if (o.hostnameDrift) return `${o.network}: hostname serves a CID the Worker did not publish`;
       if (o.refused) return `${o.network}: refused`;
       if (!o.validation) return `${o.network}: no result`;
       if ((o.validation.errors.length ?? 0) > 0)

@@ -18,7 +18,12 @@ import { publishedTags, versionTagErrors } from "./core/version-tags.ts";
 import { r2AbiStore } from "./io/abis.ts";
 import { commitInfo, envSnapshot, tagExists, type GitHub } from "./io/github.ts";
 import { dnslinkCid, pinLayer, type Web3Gateway } from "./io/publish.ts";
-import { contractsInLayer, retiredRows, type NetworkOutcome } from "./report.ts";
+import {
+  contractsInLayer,
+  retiredRows,
+  type HostnameCheck,
+  type NetworkOutcome,
+} from "./report.ts";
 
 export interface RunConfig {
   gh: GitHub;
@@ -27,9 +32,30 @@ export interface RunConfig {
   gateway: Web3Gateway | null;
   sourceRepo: string;
   hostnames: Record<Network, string>;
+  hostnameRecords: HostnameRecords;
   /** Null unless the Worker holds a Pinata JWT, which PUBLISH_MODE pin and live need. */
   pinataJwt: string | null;
   log: Logger;
+}
+
+/**
+ * The CID the Worker last pointed a network's hostname at. A hostname that serves anything else was
+ * changed by someone holding the Web3 hostnames token, and nothing publishes that network on top of it
+ * until an operator accepts it (see checkHostname).
+ */
+export interface HostnameRecord {
+  cid: string;
+  /** The CID the Worker is pointing the hostname at, set before the swap and cleared once it is seen. */
+  pending?: string;
+  /** How `cid` was recorded: a publish, the first live publish run, or an operator's acceptLiveCid. */
+  how: "published" | "seeded" | "accepted";
+  at: number;
+}
+
+/** Where the records live: the Publisher, whose storage only this Worker's code writes. */
+export interface HostnameRecords {
+  get(network: Network): Promise<HostnameRecord | null>;
+  put(network: Network, record: HostnameRecord): Promise<void>;
 }
 
 /**
@@ -57,6 +83,77 @@ export function publishMode(
 function liveCidOf(config: RunConfig, network: Network): Promise<string | null> {
   const hostname = config.hostnames[network];
   return config.gateway ? config.gateway.currentCid(hostname) : dnslinkCid(hostname);
+}
+
+function driftMessage(config: RunConfig, network: Network, live: string | null, recorded: string) {
+  const hostname = config.hostnames[network];
+  const recover = live
+    ? `If the change was deliberate, accept it with a manual publish run that sets ` +
+      `"acceptLiveCid": "${live}". If not, point ${hostname} back at ${recorded} and rotate the ` +
+      `Web3 hostnames token.`
+    : `Point ${hostname} back at ${recorded}, and rotate the Web3 hostnames token unless the change ` +
+      `was deliberate.`;
+  return (
+    `${network}: ${hostname} serves ${live ?? "no CID"}, not ${recorded}, the CID the Worker last ` +
+    `pointed it at. Something other than the Worker changed it, so nothing publishes ${network} until ` +
+    `someone acts. ${recover}`
+  );
+}
+
+/** Thrown when a hostname serves a CID the Worker did not point it at; see checkHostname. */
+export class HostnameDriftError extends Error {
+  constructor(config: RunConfig, network: Network, live: string | null, recorded: string) {
+    super(driftMessage(config, network, live, recorded));
+    this.name = "HostnameDriftError";
+  }
+}
+
+/**
+ * Compares what a network's hostname serves with the CID the Worker last pointed it at, at the start
+ * of a run. A CID that is neither the recorded one nor one the Worker was pointing the hostname at is
+ * drift: the run reports it, and the network does not publish on top of it.
+ *
+ * Only a publish run writes the record (the Publisher runs one at a time; previews run beside them):
+ *   - a pending CID the hostname now serves becomes the record, as the swap that run made
+ *   - `acceptLiveCid`, when the hostname serves exactly that CID, becomes the record: an operator's
+ *     acceptance of a change made by hand
+ *   - with no record yet, PUBLISH_MODE live records what the hostname serves (trust on first use);
+ *     shadow and pin do not, since until live something other than the Worker may still publish
+ */
+export async function checkHostname(
+  config: RunConfig,
+  network: Network,
+  options: { mode: PublishMode | null; acceptLiveCid?: string },
+): Promise<HostnameCheck> {
+  const liveCid = await liveCidOf(config, network);
+  const record = await config.hostnameRecords.get(network);
+  const ok: HostnameCheck = { network, liveCid, drift: null, recorded: null };
+  const publish = options.mode !== null;
+
+  if (record && liveCid === record.cid) return ok;
+  if (record && liveCid === record.pending) {
+    if (publish) {
+      await config.hostnameRecords.put(network, { cid: liveCid, how: "published", at: Date.now() });
+      config.log.info(
+        `${network}: the hostname serves ${liveCid}, which a publish was pointing it at`,
+      );
+    }
+    return ok;
+  }
+  if (publish && liveCid !== null) {
+    const how =
+      liveCid === options.acceptLiveCid
+        ? "accepted"
+        : !record && options.mode === "live"
+          ? "seeded"
+          : null;
+    if (how) {
+      await config.hostnameRecords.put(network, { cid: liveCid, how, at: Date.now() });
+      return { ...ok, recorded: how };
+    }
+  }
+  if (!record) return ok;
+  return { ...ok, drift: driftMessage(config, network, liveCid, record.cid) };
 }
 
 export interface GenerateOptions {
@@ -274,7 +371,10 @@ export async function pinNetwork(
   return cid;
 }
 
-/** Points the hostname at a pinned layer, unless the tip moved since the layer was built. */
+/**
+ * Points the hostname at a pinned layer and records it, unless the tip moved since the layer was built
+ * or the hostname serves a CID the Worker did not point it at.
+ */
 export async function pointHostname(
   config: RunConfig,
   outcome: GeneratedOutcome,
@@ -282,13 +382,23 @@ export async function pointHostname(
 ): Promise<void> {
   const { gateway } = config;
   if (!gateway) throw new Error("CLOUDFLARE_API_TOKEN is not set");
-  const hostname = config.hostnames[outcome.network];
+  const { network } = outcome;
+  const hostname = config.hostnames[network];
   const current = await gateway.currentCid(hostname);
-  if (current === cid) return; // a retry after the change already landed
-  if (current !== outcome.liveCid)
-    throw new TipMovedError(outcome.network, outcome.liveCid, current);
-  await gateway.setCid(hostname, cid);
-  const after = await gateway.currentCid(hostname);
-  if (after !== cid)
-    throw new Error(`${hostname} still serves ${after} after pointing it at ${cid}`);
+  // On a retry after the change already landed, only the record is left to write
+  if (current !== cid) {
+    if (current !== outcome.liveCid) throw new TipMovedError(network, outcome.liveCid, current);
+    // The run checked the hostname when it started; this catches a change made since
+    const record = await config.hostnameRecords.get(network);
+    if (record && current !== record.cid) {
+      throw new HostnameDriftError(config, network, current, record.cid);
+    }
+    // Before the swap, so a run that stops after it still leaves the CID recognisable as its own
+    if (record) await config.hostnameRecords.put(network, { ...record, pending: cid });
+    await gateway.setCid(hostname, cid);
+    const after = await gateway.currentCid(hostname);
+    if (after !== cid)
+      throw new Error(`${hostname} still serves ${after} after pointing it at ${cid}`);
+  }
+  await config.hostnameRecords.put(network, { cid, how: "published", at: Date.now() });
 }

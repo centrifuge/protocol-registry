@@ -2,8 +2,9 @@
  * One registry run, as a durable Workflow: every step retries on its own and keeps its result, so a
  * run that waits on an ABI build or an unreachable gateway resumes where it stopped.
  *
- *   commit → env check → ABIs → generate each network → preview: the PR's check run
- *                                                      → publish: pin, swap the dnslink, Slack
+ *   hostname check → commit → env check → ABIs → generate each network
+ *     → preview: the PR's check run
+ *     → publish: pin, swap the dnslink, Slack
  *
  * A publish run is started by the Publisher (one at a time); a preview by a pull request.
  */
@@ -16,11 +17,20 @@ import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
 import { branchHead, completeCheckRun, type CheckRunOutput } from "./io/github.ts";
 import { notifySlack } from "./io/publish.ts";
-import { hasErrors, headline, previewMarkdown, toPublish, type NetworkOutcome } from "./report.ts";
+import {
+  hasErrors,
+  headline,
+  hostnameReport,
+  previewMarkdown,
+  toPublish,
+  type NetworkOutcome,
+} from "./report.ts";
 import {
   checkEnv,
+  checkHostname,
   missingAbis,
   generateNetwork,
+  HostnameDriftError,
   loadEnv,
   pinNetwork,
   pointHostname,
@@ -28,6 +38,12 @@ import {
   TipMovedError,
   type GeneratedOutcome,
 } from "./run.ts";
+
+/** A publish that met another publisher's change stops for good: a retry would meet it again. */
+const stopsForGood = (error: unknown) =>
+  error instanceof TipMovedError || error instanceof HostnameDriftError
+    ? new NonRetryableError(error.message)
+    : error;
 
 export interface RunParams {
   kind: "preview" | "publish";
@@ -42,6 +58,8 @@ export interface RunParams {
   sourceCid?: string;
   allowPartialChain?: boolean;
   allowHistoryDrop?: boolean;
+  /** Publish only: the CID the one network's hostname serves, accepted as the one to publish on. */
+  acceptLiveCid?: string;
 }
 
 export interface RunResult {
@@ -71,6 +89,27 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
     const networks = params.networks ?? [...NETWORKS];
 
     try {
+      const mode = params.kind === "publish" ? publishMode(this.env.PUBLISH_MODE, config) : null;
+
+      // First, so a hostname changed outside the Worker is reported even when env/ or the ABIs stop
+      // the run before it generates anything
+      const hostnameChecks = await step.do("check hostnames", () =>
+        Promise.all(
+          networks.map((network) =>
+            checkHostname(config, network, { mode, acceptLiveCid: params.acceptLiveCid }),
+          ),
+        ),
+      );
+      const hostnameMessage = mode ? hostnameReport(hostnameChecks, config.hostnames) : "";
+      if (hostnameMessage) {
+        await step.do("report hostnames", () =>
+          notifySlack(
+            this.env.SLACK_WEBHOOK_URL,
+            `${hostnameMessage}\n_${params.reason}, run \`${runId}\`_`,
+          ),
+        );
+      }
+
       const sha = await step.do(
         "resolve commit",
         async () =>
@@ -104,29 +143,29 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
       );
 
       const outcomes: GeneratedOutcome[] = [];
-      for (const network of networks) {
-        outcomes.push(
-          await step.do(
-            `generate ${network}`,
-            {
-              retries: { limit: 3, delay: "1 minute", backoff: "exponential" },
-              timeout: "10 minutes",
-            },
-            async () =>
-              generateNetwork(config, runId, network, await loadEnv(config, sha), {
-                mode: params.mode,
-                sourceCid: params.sourceCid,
-                allowPartialChain: params.allowPartialChain,
-                allowHistoryDrop: params.allowHistoryDrop,
-              }),
-          ),
+      for (const [i, network] of networks.entries()) {
+        const outcome = await step.do(
+          `generate ${network}`,
+          {
+            retries: { limit: 3, delay: "1 minute", backoff: "exponential" },
+            timeout: "10 minutes",
+          },
+          async () =>
+            generateNetwork(config, runId, network, await loadEnv(config, sha), {
+              mode: params.mode,
+              sourceCid: params.sourceCid,
+              allowPartialChain: params.allowPartialChain,
+              allowHistoryDrop: params.allowHistoryDrop,
+            }),
         );
+        // A drifted network is still generated, so the report shows what accepting it would publish
+        const { drift } = hostnameChecks[i];
+        outcomes.push(drift ? { ...outcome, hostnameDrift: drift } : outcome);
       }
 
       const published: Published[] = [];
       const shadow: Network[] = [];
-      if (params.kind === "publish") {
-        const mode = publishMode(this.env.PUBLISH_MODE, config);
+      if (mode) {
         for (const outcome of toPublish(outcomes)) {
           if (mode === "shadow") {
             shadow.push(outcome.network);
@@ -136,7 +175,7 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
             try {
               return await pinNetwork(config, runId, outcome, sha);
             } catch (error) {
-              throw error instanceof TipMovedError ? new NonRetryableError(error.message) : error;
+              throw stopsForGood(error);
             }
           });
           if (mode === "pin") {
@@ -147,7 +186,7 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
             try {
               await pointHostname(config, outcome, cid);
             } catch (error) {
-              throw error instanceof TipMovedError ? new NonRetryableError(error.message) : error;
+              throw stopsForGood(error);
             }
           });
           published.push({ network: outcome.network, cid, served: true });

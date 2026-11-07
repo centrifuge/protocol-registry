@@ -6,12 +6,13 @@
  *   POST /runs                a manual run (bearer MANUAL_TRIGGER_TOKEN), see ManualRun
  *   GET  /runs/<id>           a run's status and report
  *   GET  /runs/<id>/<file>    a run's generated registry-<network>.json or .validation.json
- *   GET  /status              the publisher: active run, pending run, recent history
+ *   GET  /status              the publisher: active run, pending run, recent history, and the CID
+ *                             the Worker last pointed each hostname at
  *
  * The cron reconciles every six hours, so a missed delivery or a failed run is retried unprompted.
  */
 
-import { github } from "./config.ts";
+import { github, publisher } from "./config.ts";
 import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
 import { createCheckRun, pullRequestFiles, verifyWebhookSignature } from "./io/github.ts";
@@ -35,6 +36,11 @@ interface ManualRun {
   allowHistoryDrop?: boolean;
   /** Preview only: the commit to generate from (a publish always takes the branch head). */
   sha?: string;
+  /**
+   * Publish only, one network: accept this CID, which the hostname must serve when the run starts, as
+   * the one to publish on. Clears a hostname changed outside the Worker, such as a rollback.
+   */
+  acceptLiveCid?: string;
 }
 
 const json = (body: unknown, status = 200) =>
@@ -42,10 +48,6 @@ const json = (body: unknown, status = 200) =>
     status,
     headers: { "Content-Type": "application/json" },
   });
-
-// `wrangler types` without the runtime types leaves the namespace untyped
-const publisher = (env: Env) =>
-  (env.PUBLISHER as DurableObjectNamespace<Publisher>).getByName("publisher");
 
 async function authorized(request: Request, env: Env): Promise<boolean> {
   if (!env.MANUAL_TRIGGER_TOKEN) return false;
@@ -71,6 +73,12 @@ function manualParams(body: ManualRun): RunParams | string {
     return `sourceCid must be a CID, with exactly one network`;
   }
   if (body.sha && body.kind === "publish") return `a publish always generates from the branch head`;
+  if (
+    body.acceptLiveCid &&
+    (body.kind !== "publish" || !isValidIpfsHash(body.acceptLiveCid) || body.networks?.length !== 1)
+  ) {
+    return `acceptLiveCid must be a CID, in a publish run with exactly one network`;
+  }
   return {
     kind: body.kind,
     reason: "manual",
@@ -80,6 +88,7 @@ function manualParams(body: ManualRun): RunParams | string {
     ...(body.sourceCid && { sourceCid: body.sourceCid }),
     ...(body.allowPartialChain && { allowPartialChain: true }),
     ...(body.allowHistoryDrop && { allowHistoryDrop: true }),
+    ...(body.acceptLiveCid && { acceptLiveCid: body.acceptLiveCid }),
   };
 }
 

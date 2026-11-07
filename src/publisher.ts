@@ -10,10 +10,17 @@
  *
  * Whether the active run has ended is polled with an alarm: a run that dies without reporting back
  * must not block publishing forever.
+ *
+ * It also keeps, per network, the CID the Worker last pointed the hostname at (HostnameRecord in
+ * ./run.ts). That record is what tells a hostname changed with a leaked Web3 token from one the Worker
+ * changed, so it lives here and not in R2: protocol-internal's ABI workflow holds a token that writes
+ * the bucket, and only this Worker's code writes Durable Object storage.
  */
 
 import { DurableObject } from "cloudflare:workers";
 
+import { NETWORKS, type Network } from "./core/types.ts";
+import type { HostnameRecord } from "./run.ts";
 import type { RunParams } from "./workflow.ts";
 
 interface ActiveRun {
@@ -32,11 +39,13 @@ export interface PublisherStatus {
   active: ActiveRun | null;
   pending: RunParams | null;
   history: FinishedRun[];
+  hostnames: Partial<Record<Network, HostnameRecord>>;
 }
 
 const POLL_MS = 60_000;
 const HISTORY = 20;
 const ENDED = new Set(["complete", "errored", "terminated"]);
+const hostnameKey = (network: Network) => `hostname/${network}`;
 
 export class Publisher extends DurableObject<Env> {
   /** Starts a publish run, or queues it behind the active one. */
@@ -53,11 +62,25 @@ export class Publisher extends DurableObject<Env> {
   }
 
   async status(): Promise<PublisherStatus> {
+    const hostnames: PublisherStatus["hostnames"] = {};
+    for (const network of NETWORKS) {
+      const record = await this.hostnameRecord(network);
+      if (record) hostnames[network] = record;
+    }
     return {
       active: (await this.ctx.storage.get<ActiveRun>("active")) ?? null,
       pending: (await this.ctx.storage.get<RunParams>("pending")) ?? null,
       history: (await this.ctx.storage.get<FinishedRun[]>("history")) ?? [],
+      hostnames,
     };
+  }
+
+  async hostnameRecord(network: Network): Promise<HostnameRecord | null> {
+    return (await this.ctx.storage.get<HostnameRecord>(hostnameKey(network))) ?? null;
+  }
+
+  async putHostnameRecord(network: Network, record: HostnameRecord): Promise<void> {
+    await this.ctx.storage.put(hostnameKey(network), record);
   }
 
   async alarm(): Promise<void> {
