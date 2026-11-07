@@ -30,11 +30,11 @@ format. [operations.md](operations.md) describes day-to-day operation.
 | R2 bucket `centrifuge-protocol-registry`                  | Holds ABI bundles, a cache of published layers by CID, `env/` snapshots by commit, and the generated layers and report of each run.                                                                                             |
 | GitHub App "Centrifuge Protocol Registry"                 | Installed on protocol-internal only. Sends push, pull request and check run events to the Worker. Lets the Worker read protocol-internal's `env/` and post check runs.                                                          |
 | The Worker                                                | Receives the events, decides what each event asks for, and starts runs.                                                                                                                                                         |
-| Publisher (Durable Object)                                | Lets one publish run go at a time, so two publish runs never race for the same hostname.                                                                                                                                        |
+| Publisher (Durable Object)                                | Lets one publish run go at a time, so two publish runs never race for the same hostname. Records, per network, the CID that the Worker last pointed the hostname at.                                                            |
 | RegistryRun (Workflow)                                    | One run, as durable steps. Each step retries on its own: read `env/`, check it, find the ABIs, generate and validate each network, then preview or publish.                                                                     |
 | Pinata                                                    | Pins each published layer to IPFS.                                                                                                                                                                                              |
 | Cloudflare Web3 hostnames                                 | `registry.centrifuge.io` and `registry.testnet.centrifuge.io`. Each hostname points at the CID of a layer.                                                                                                                      |
-| Slack                                                     | Receives a message for each publish, refusal and failure.                                                                                                                                                                       |
+| Slack                                                     | Receives a message for each publish, refusal and failure, and an alert for each hostname that serves a CID the Worker did not publish.                                                                                          |
 | Consumers                                                 | Indexers and apps that read the chain: api-v3, event-lake and the apps built on it.                                                                                                                                             |
 
 ## The flow
@@ -84,18 +84,22 @@ flowchart LR
    required check. "Re-run" on the check starts the preview again.
 
 3. **The run.** Its steps are:
-   1. **Resolve the commit:** the PR head for a preview, the head of the release branch for a publish
+   1. **Check the hostnames:** compare the CID that each hostname serves with the CID that the Worker
+      last pointed it at. A difference stops the network from publishing (see
+      [What keeps a publish safe](#what-keeps-a-publish-safe)). This step comes first, so a problem
+      with `env/` or the ABIs cannot delay the alert.
+   2. **Resolve the commit:** the PR head for a preview, the head of the release branch for a publish
       run.
-   2. **Check `env/`** at that commit: the schema of the configs, `retired.json`, `versions.json`, and
+   3. **Check `env/`** at that commit: the schema of the configs, `retired.json`, `versions.json`, and
       that every contract `version` resolves to a tag. A problem here ends the run.
-   3. **Ensure ABIs:** every tag that `env/` uses must have a bundle in R2, built from the commit that
+   4. **Ensure ABIs:** every tag that `env/` uses must have a bundle in R2, built from the commit that
       the tag points at. If a bundle is missing, the step retries every 2 minutes for up to an hour.
       That time covers a `build-abis.yml` run in progress. After that, the step fails and names the
       tag.
-   4. **Generate each network:** walk the published chain of the network from the live CID back to the
+   5. **Generate each network:** walk the published chain of the network from the live CID back to the
       base snapshot. Compute the layer against the accumulated state, and validate the layer (see
       [registry-format.md](registry-format.md)).
-   5. **Report:** a preview completes the check run with the layer that each network would get, and
+   6. **Report:** a preview completes the check run with the layer that each network would get, and
       with every finding. The check run fails when a layer would break the indexer. A publish run
       continues with the steps in item 4.
 4. **The merge publishes.** The merge is a push to the release branch. A push that touches `env/` asks
@@ -105,6 +109,7 @@ flowchart LR
    2. **points** the hostname of the network at the new CID, through the Cloudflare API. Before that,
       the run checks that the hostname still serves the CID that the layer was built on. If something
       else published a layer in between, the run stops, because the new CID would orphan that layer.
+      The run also checks the record again, then records the new CID.
 
    The run judges each network on its own, so an error on testnet does not stop mainnet. Slack gets one
    message per publish run. The message names what the run published, pinned or refused.
@@ -165,6 +170,24 @@ a new CID, not only the registry hostnames. For this reason, the Worker holds it
 - **One publisher, and a moved tip stops it.** The Publisher lets one publish run go at a time. Before a
   publish run points a hostname at a new CID, it checks that the hostname still serves the CID it built
   on.
+- **A hostname change that the Worker did not make stops publishing.** The Publisher records, per
+  network, the CID that the Worker last pointed the hostname at. Every run first compares the live CID
+  with this record. If they differ:
+  - no run publishes that network. The other network publishes as usual.
+  - a publish run posts a Slack alert that names both CIDs. Every publish run, the cron included,
+    alerts again until someone acts.
+  - a preview shows the difference as an error on that network.
+
+  The run also generates the layer, so the report shows what an acceptance would publish. Before it
+  points a hostname at a new CID, a publish run checks the record again. So a change made during the
+  run also stops it. To accept a change made by hand, see
+  [operations.md](operations.md#a-hostname-changed-outside-the-worker).
+
+  A publish run marks a CID as pending before it points the hostname at it. If the run stops before it
+  confirms the change, the next publish run records that CID as the CID of the Worker. The record is
+  in the storage of the Publisher, not in R2, because protocol-internal's `build-abis.yml` holds a
+  token that can write the R2 bucket.
+
 - **Staged credentials.** Each of `shadow`, `pin` and `live` gives the Worker one more capability.
 
 ## Consumers
@@ -235,9 +258,21 @@ true.
 ### Publishing
 
 - **The Worker is the only publisher.** Nothing else changes the DNSLinks of the hostnames. The Worker
-  detects a change made by hand, because the hostname no longer serves the CID that a layer was built
-  on. The publish run then stops. That stop is the safety, so after a manual change, start a run that
-  builds on it.
+  records each CID that it points a hostname at. A run that finds another CID refuses to publish that
+  network, and a publish run alerts on Slack. A change with a leaked `CLOUDFLARE_API_TOKEN`, or by
+  hand, is detected, not prevented:
+  - The next run detects it: the next push to the release branch, or the cron within six hours.
+  - Consumers that follow the hostname read the new layer until someone points the hostname back.
+
+  After a deliberate change, accept the new CID with a manual publish run (see
+  [operations.md](operations.md#a-hostname-changed-outside-the-worker)).
+
+- **The first live publish run trusts what the hostname serves.** No record exists before the first
+  publish run in `live` mode. That run records the CID that each hostname serves then (trust on first
+  use), and announces it on Slack. Nothing detects a change made before that run. Runs in `shadow` and
+  `pin` record nothing, because another publisher can still be active before `live`.
+- **Only the Worker writes the record.** The code of the Worker is the only writer of the storage of
+  the Publisher. A person who can deploy the Worker can also change the record.
 - **Generation is deterministic.** The same `env/`, live layer and ABIs give the same bytes, and so the
   same CID. So you can check a layer before the Worker publishes it, and a retry pins the same layer.
 - **Pinata's layout stays as it is.** The Worker uploads layers through the public files API of Pinata.
@@ -276,6 +311,7 @@ true.
 | ABI builds                                                  | protocol-internal `main`, [`.github/workflows/build-abis.yml`][pi-build-abis], with the repository secrets `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`                                                                                                                                |
 | R2 bucket `centrifuge-protocol-registry` (Official account) | `abis/<tag>/` (ABI bundles), `layers/<cid>.json` (published layers, cached), `snapshots/<sha>.json` (protocol-internal's `env/` at a commit), `runs/<id>/` (the layers, validation and report of each run). ops-v3 holds the bucket and the R2 token. See the README's Setup section. |
 | The Worker                                                  | This repository. Settings are in `wrangler.jsonc` (`SOURCE_REPO`, `SOURCE_BRANCH`, `PUBLISH_MODE`, hostnames, zone). Deploy it with `scripts/deploy.sh`, which labels each version with its commit.                                                                                   |
+| The CID that the Worker last pointed each hostname at       | The storage of the Publisher Durable Object. `GET /status` shows it under `hostnames`.                                                                                                                                                                                                |
 | Worker secrets                                              | The 1Password Environment "protocol-registry Worker": `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `MANUAL_TRIGGER_TOKEN`, `PINATA_JWT`. Upload them with `scripts/push-secrets.sh`.                                                      |
 | `CLOUDFLARE_API_TOKEN`                                      | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS". `.env.1password` references its 1Password item. The ops-v3 reconciler rotates it.                                                                                                                                      |
 | The GitHub App                                              | GitHub organization settings. Installed on protocol-internal only.                                                                                                                                                                                                                    |
