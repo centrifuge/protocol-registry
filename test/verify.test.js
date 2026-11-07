@@ -14,19 +14,13 @@ import { sha256, sha512 } from "multiformats/hashes/sha2";
 import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
 import { layerFromBytes, unixfsFileRoot, verifyLayer } from "../src/core/verify.ts";
 import { fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
-import { DAG_PB_LAYER, MAINNET_HEAD, realLayerBytes } from "./helpers.js";
+import { DAG_PB_LAYER, MAINNET_HEAD, flipByte, realLayerBytes } from "./helpers.js";
 
 const RAW = 0x55;
 const DAG_PB = 0x70;
 const DAG_JSON = 0x0129;
 const CHUNK_SIZE = 262144;
 const LINKS_PER_NODE = 174;
-
-function flipByte(bytes, offset) {
-  const tampered = new Uint8Array(bytes);
-  tampered[offset] ^= 0x01;
-  return tampered;
-}
 
 async function assertRefused(cid, bytes, reason) {
   await assert.rejects(

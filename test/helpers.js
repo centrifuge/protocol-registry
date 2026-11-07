@@ -142,3 +142,10 @@ export function realLayerCids() {
 export function realLayerBytes(cid) {
   return new Uint8Array(gunzipSync(readFileSync(new URL(`${cid}.json.gz`, LAYER_FIXTURES))));
 }
+
+/** A copy of `bytes` with the byte at `offset` changed: a tampered layer, built in the test. */
+export function flipByte(bytes, offset) {
+  const tampered = new Uint8Array(bytes);
+  tampered[offset] ^= 0x01;
+  return tampered;
+}

@@ -18,6 +18,7 @@ import {
   chain,
   contract,
   fakeFetch,
+  flipByte,
   ipfsFetcher,
   layer,
   realLayerBytes,
@@ -438,9 +439,8 @@ function realFetcher({ tampered = null } = {}) {
   const fetchLayer = async (cid) => {
     fetched.push(cid);
     if (!known.has(cid)) throw new Error(`could not fetch ${cid}`);
-    const bytes = new Uint8Array(realLayerBytes(cid));
-    if (cid === tampered) bytes[10] ^= 0x01;
-    return layerFromBytes(cid, bytes);
+    const bytes = realLayerBytes(cid);
+    return layerFromBytes(cid, cid === tampered ? flipByte(bytes, 10) : bytes);
   };
   return { fetchLayer, fetched };
 }
