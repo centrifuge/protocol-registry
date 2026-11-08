@@ -190,6 +190,56 @@ test("a retirement closing an address env still lists is an error", () => {
   assert.match(errors[0].message, /env still lists as live/);
 });
 
+test("an env address the published chain has retired is refused; a retirement in this delta is 1b's", () => {
+  // Retirement is final: a version declaration skips an address env lists, so re-adding a retired
+  // address emits nothing, the projection sees the same address, and the indexer's listener stays
+  // closed at endBlock while env says the contract is live. The path tells the two rules apart: 1b
+  // reports the delta's `retired` entry, this rule the env contract.
+  const retired = { [address(2)]: { contract: "vaultRegistry", endBlock: 900 } };
+  const published = { hub: contract(address(1)), vaultRegistry: contract(address(2)) };
+  for (const [label, accumulatedChains, deltaRegistry, envChains, expectedPaths] of [
+    [
+      "retired in the published chain, then re-added to env",
+      { 1: chain(published, { retired }) },
+      { chains: {} },
+      { 1: chain({ hub: contract(address(1)), vaultRegistry: contract(address(2)) }) },
+      ["chains.1.contracts.vaultRegistry"],
+    ],
+    [
+      "retired in the published chain, re-added to env under a new key",
+      { 1: chain(published, { retired }) },
+      { chains: { 1: chain({ vaultRegistryV2: contract(address(2)) }) } },
+      { 1: chain({ hub: contract(address(1)), vaultRegistryV2: contract(address(2)) }) },
+      ["chains.1.contracts.vaultRegistryV2"],
+    ],
+    [
+      "retired in the published chain, absent from env",
+      { 1: chain(published, { retired }) },
+      { chains: {} },
+      { 1: chain({ hub: contract(address(1)) }) },
+      [],
+    ],
+    [
+      "retired in this delta, still in env",
+      { 1: chain(published) },
+      { chains: { 1: chain({}, { retired }) } },
+      { 1: chain({ hub: contract(address(1)), vaultRegistry: contract(address(2)) }) },
+      [`chains.1.retired.${address(2)}`],
+    ],
+  ]) {
+    const { errors } = checkDeltaInvariants({ accumulatedChains, deltaRegistry, envChains });
+
+    assert.deepEqual(
+      errors.map((error) => error.path),
+      expectedPaths,
+      label,
+    );
+    for (const error of errors.filter((e) => e.path.startsWith("chains.1.contracts."))) {
+      assert.match(error.message, /endBlock 900/, label);
+    }
+  }
+});
+
 test("a retirement restating a published one is an error; a changed end block is a correction", () => {
   const retired = { [address(2)]: { contract: "guardian", endBlock: 900 } };
   const accumulatedChains = { 1: chain({ guardian: contract(address(2)) }, { retired }) };

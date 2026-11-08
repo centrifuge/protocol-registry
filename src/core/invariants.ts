@@ -15,6 +15,12 @@
  *   2. Minimality. No delta entry may restate what the published state already says. Catches the
  *      inflation directly — this is the check that fails on the original bug.
  *
+ * Retirements are checked both ways. A `retired` entry in the delta must close an address env no
+ * longer lists; and an address env lists must not be one the published chain has already retired.
+ * The second is what makes a retirement final: nothing in the schema reopens an address, and a
+ * version declaration skips an address env lists (see ./retirements.ts), so re-adding a retired
+ * address to env emits nothing and would leave indexers with a closed listener env says is live.
+ *
  * A size heuristic warns when a delta looks like a snapshot, which is what a human noticed first.
  */
 
@@ -266,6 +272,31 @@ export function checkDeltaInvariants({
           });
         }
       }
+    }
+  }
+
+  // --- 1c. Env must not list an address the published chain has already retired ---
+  // The retired entry stays in force whatever env says: a version declaration skips an address env
+  // lists, so nothing is emitted, the projection sees the same address and passes, and indexers
+  // keep the listener closed at its endBlock. An address this delta itself retires is 1b's case.
+  for (const [chainId, envChain] of Object.entries(envChains || {})) {
+    const retiredHere = projectedRetired[chainId] || {};
+    const retiredByDelta = new Set(
+      Object.keys(deltaChains[chainId]?.retired || {}).map((a) => a.toLowerCase()),
+    );
+    for (const [name, envContract] of Object.entries(envChain?.contracts || {})) {
+      const address = addressOf(envContract)?.toLowerCase();
+      if (!address || retiredByDelta.has(address)) continue;
+      const existing = retiredHere[address];
+      if (!existing) continue;
+      errors.push({
+        path: `chains.${chainId}.contracts.${name}`,
+        message:
+          `Env lists ${address} as live, but the published chain retired it at ` +
+          `endBlock ${existing.endBlock}, and nothing in the schema reopens a retired ` +
+          `address — indexers would keep its listener closed. Deploy to a new address, ` +
+          `or leave it retired and remove it from env`,
+      });
     }
   }
 
