@@ -426,13 +426,15 @@ curl -sX POST https://<host>/runs -H "Authorization: Bearer $TOKEN" -d '{"kind":
 curl -sX POST https://<host>/runs -H "Authorization: Bearer $TOKEN" \
   -d '{"kind":"publish","networks":["testnet"],"mode":"full"}'
 
-# The publisher: active run, pending run, the last 20
+# The publisher: active run, pending run, the last 20, the CID last pointed at per hostname
 curl -s https://<host>/status -H "Authorization: Bearer $TOKEN"
 ```
 
 `POST /runs` takes `kind`, and optionally `networks`, `mode` (`auto`, `delta`, `patch`, `full`),
 `sourceCid` (build on that CID instead of the tip; one network), `allowPartialChain`,
-`allowHistoryDrop`, and for a preview `sha`. A run's layers are at
+`allowHistoryDrop`, for a preview `sha`, and for a publish of one network `acceptLiveCid` (accept
+the CID the hostname serves after a change made outside the Worker; see
+[docs/operations.md](docs/operations.md#a-hostname-changed-outside-the-worker)). A run's layers are at
 `GET /runs/<id>/registry-<network>.json` and `.validation.json`.
 
 **Locally**, with a protocol checkout (for env and tags) and wrangler access to the bucket
@@ -476,6 +478,8 @@ Where the Worker differs from the scripts it replaces:
 - The tip is read by CID from the hostname's dnslink and fetched through IPFS, instead of over HTTP
   with the CID resolved separately, so the layer and its `previousRegistry.ipfsHash` always agree.
 - A publish refuses when the hostname moved while it ran.
+- A run refuses to publish a network, and alerts on Slack, when its hostname serves a CID the Worker
+  did not point it at.
 
 ## Development
 

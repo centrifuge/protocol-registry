@@ -5,8 +5,14 @@ import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
-import { publishCheck, publishLines, toPublish } from "../src/report.ts";
-import { pointHostname, publishMode, TipMovedError } from "../src/run.ts";
+import { hostnameReport, publishCheck, publishLines, toPublish } from "../src/report.ts";
+import {
+  checkHostname,
+  HostnameDriftError,
+  pointHostname,
+  publishMode,
+  TipMovedError,
+} from "../src/run.ts";
 import { route, touchesRegistryInputs } from "../src/webhook.ts";
 
 const config = { sourceRepo: "centrifuge/protocol-internal", sourceBranch: "live-v3.3" };
@@ -198,26 +204,136 @@ function fakeGateway(initial) {
 
 const hostnames = { mainnet: "registry.centrifuge.io", testnet: "registry.testnet.centrifuge.io" };
 
-test("pointHostname swaps the dnslink when the tip is the one the layer was generated against", async () => {
-  const gateway = fakeGateway("tip");
-  await pointHostname({ gateway, hostnames }, { network: "mainnet", liveCid: "tip" }, "new");
-  assert.deepEqual(gateway.state.sets, ["new"]);
+/** The Publisher's hostname records, in memory: network → the CID last pointed at. */
+function fakeRecords(cids = {}) {
+  const state = new Map(
+    Object.entries(cids).map(([network, cid]) => [network, { cid, how: "published", at: 0 }]),
+  );
+  return {
+    get: async (network) => state.get(network) ?? null,
+    put: async (network, record) => {
+      state.set(network, record);
+    },
+  };
+}
+
+/** A run's config as the hostname steps see it: the hostname serves `liveCid`. */
+function hostnameConfig(liveCid, recorded = {}) {
+  const silent = { info() {}, warn() {}, error() {} };
+  return {
+    gateway: fakeGateway(liveCid),
+    hostnames,
+    hostnameRecords: fakeRecords(recorded),
+    log: silent,
+  };
+}
+
+const recordedCid = async (config) => (await config.hostnameRecords.get("mainnet"))?.cid ?? null;
+
+test("pointHostname swaps the dnslink when the tip is the one the layer was generated against, and records it", async () => {
+  const config = hostnameConfig("tip", { mainnet: "tip" });
+  await pointHostname(config, { network: "mainnet", liveCid: "tip" }, "new");
+  assert.deepEqual(config.gateway.state.sets, ["new"]);
+  assert.equal(await recordedCid(config), "new");
 });
 
 test("pointHostname refuses when something else published in between", async () => {
   // Swapping anyway would orphan the other publish: its layer would no longer be in the chain
-  const gateway = fakeGateway("someone-else");
+  const config = hostnameConfig("someone-else", { mainnet: "tip" });
   await assert.rejects(
-    () => pointHostname({ gateway, hostnames }, { network: "mainnet", liveCid: "tip" }, "new"),
+    () => pointHostname(config, { network: "mainnet", liveCid: "tip" }, "new"),
     TipMovedError,
   );
-  assert.deepEqual(gateway.state.sets, []);
+  assert.deepEqual(config.gateway.state.sets, []);
 });
 
-test("pointHostname is a no-op on a retry after the swap landed", async () => {
-  const gateway = fakeGateway("new");
-  await pointHostname({ gateway, hostnames }, { network: "mainnet", liveCid: "tip" }, "new");
-  assert.deepEqual(gateway.state.sets, []);
+test("pointHostname only records the CID on a retry after the swap landed", async () => {
+  const config = hostnameConfig("new", { mainnet: "tip" });
+  await pointHostname(config, { network: "mainnet", liveCid: "tip" }, "new");
+  assert.deepEqual(config.gateway.state.sets, []);
+  assert.equal(await recordedCid(config), "new");
+});
+
+test("a publish run refuses and alerts when a hostname serves a CID the Worker did not publish", async () => {
+  // Someone holding the Web3 token pointed mainnet at their own layer
+  const config = hostnameConfig("foreign", { mainnet: "published" });
+
+  const check = await checkHostname(config, "mainnet", { mode: "live" });
+  assert.match(check.drift, /serves foreign, not published/);
+  assert.ok(hostnameReport([check], hostnames).includes(check.drift));
+
+  // The layer generated on it does not publish; testnet, unaffected, still does
+  const mainnet = {
+    network: "mainnet",
+    liveCid: "foreign",
+    publishable: true,
+    validation: { errors: [] },
+    hostnameDrift: check.drift,
+  };
+  const testnet = { network: "testnet", publishable: true, validation: { errors: [] } };
+  assert.deepEqual(
+    toPublish([mainnet, testnet]).map((o) => o.network),
+    ["testnet"],
+  );
+
+  // And the swap itself refuses it, for a run that checked before the hostname changed
+  await assert.rejects(() => pointHostname(config, mainnet, "new"), HostnameDriftError);
+  assert.deepEqual(config.gateway.state.sets, []);
+  assert.equal(await recordedCid(config), "published");
+});
+
+test("acceptLiveCid accepts the CID the hostname serves, in a publish run only", async () => {
+  // An operator pointed mainnet back at an earlier layer by hand
+  const config = hostnameConfig("rollback", { mainnet: "bad" });
+
+  for (const options of [
+    { mode: null, acceptLiveCid: "rollback" }, // a preview reports, and writes nothing
+    { mode: "live", acceptLiveCid: "other" }, // the hostname moved since the operator looked
+  ]) {
+    assert.ok((await checkHostname(config, "mainnet", options)).drift);
+    assert.equal(await recordedCid(config), "bad");
+  }
+
+  const accepted = await checkHostname(config, "mainnet", {
+    mode: "live",
+    acceptLiveCid: "rollback",
+  });
+  assert.deepEqual([accepted.drift, accepted.recorded], [null, "accepted"]);
+  await pointHostname(config, { network: "mainnet", liveCid: "rollback" }, "fix");
+  assert.deepEqual(config.gateway.state.sets, ["fix"]);
+});
+
+test("a swap the Worker made counts as its own, even when its run stopped before seeing it land", async () => {
+  const config = hostnameConfig("tip", { mainnet: "tip" });
+  const { setCid } = config.gateway;
+  config.gateway.setCid = async (hostname, cid) => {
+    await setCid(hostname, cid);
+    throw new Error("timed out");
+  };
+  await assert.rejects(
+    () => pointHostname(config, { network: "mainnet", liveCid: "tip" }, "new"),
+    /timed out/,
+  );
+
+  // A preview meanwhile sees no drift and writes nothing; the next publish run records the swap
+  assert.equal((await checkHostname(config, "mainnet", { mode: null })).drift, null);
+  assert.equal(await recordedCid(config), "tip");
+  assert.equal((await checkHostname(config, "mainnet", { mode: "pin" })).drift, null);
+  assert.equal(await recordedCid(config), "new");
+});
+
+test("with no record yet, only a live publish run records what the hostname serves", async () => {
+  for (const [mode, recorded] of [
+    ["live", "seeded"],
+    ["pin", null],
+    ["shadow", null],
+    [null, null],
+  ]) {
+    const config = hostnameConfig("tip");
+    const check = await checkHostname(config, "mainnet", { mode });
+    assert.deepEqual([check.drift, check.recorded], [null, recorded], `mode ${mode}`);
+    assert.equal(await recordedCid(config), recorded && "tip");
+  }
 });
 
 test("publishing stays in shadow unless PUBLISH_MODE says otherwise and the credentials are there", () => {
@@ -304,6 +420,11 @@ test("a publish says one line per network it published or refused, without the d
     },
   };
   const unchanged = { network: "mainnet", validation: { errors: [] } };
+  const drifted = {
+    ...unchanged,
+    hostnameDrift:
+      "mainnet: registry.centrifuge.io serves foreign, not published, the CID the Worker last pointed it at. Something other than the Worker changed it.",
+  };
   const served = { network: "mainnet", cid: "bafkreiabc", served: true };
 
   for (const [input, expected] of [
@@ -323,6 +444,7 @@ test("a publish says one line per network it published or refused, without the d
       { envProblems: ["env/testnet/base.json: no chainId\nmore"] },
       [/env\/ has 1 problem.*chainId$/],
     ],
+    [{ outcomes: [drifted] }, [/mainnet .*refused: .*serves foreign, not published, .*at\.$/]],
     [{ outcomes: [unchanged] }, []],
   ]) {
     const lines = publishLines({

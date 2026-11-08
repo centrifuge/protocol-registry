@@ -10,6 +10,7 @@ section describes the setup: the App, the secrets and the deploys.
 - [Following a run](#following-a-run)
 - [Changing `PUBLISH_MODE`](#changing-publish_mode)
 - [Pointing a hostname back](#pointing-a-hostname-back)
+- [A hostname changed outside the Worker](#a-hostname-changed-outside-the-worker)
 - [ABIs](#abis)
 - [Generating locally](#generating-locally)
 - [Auditing the published chain](#auditing-the-published-chain)
@@ -56,6 +57,7 @@ op run --environment "$REGISTRY_OP_ENVIRONMENT" -- sh -c \
 | `sourceCid`         | Build on this CID instead of the live layer. Needs exactly one network. Use it to generate a broken layer again, or to test against an older layer. |
 | `allowPartialChain` | Continue when the run cannot walk the whole chain. Expect the run to emit published contracts and retirements again.                                |
 | `allowHistoryDrop`  | Let a full snapshot drop published, unretired contracts. Use it only to replace the deployment on purpose.                                          |
+| `acceptLiveCid`     | Publish only, one network: accept this CID, which the hostname serves, after a change by hand. See [below](#a-hostname-changed-outside-the-worker). |
 
 Examples of `-d` bodies:
 
@@ -64,6 +66,7 @@ Examples of `-d` bodies:
 '{"kind":"publish"}'                                        # publish now, queued behind a running publish
 '{"kind":"publish","networks":["mainnet"]}'                 # one network
 '{"kind":"preview","networks":["testnet"],"mode":"patch"}'  # force a patch
+'{"kind":"publish","networks":["mainnet"],"acceptLiveCid":"<cid>"}'  # accept a CID set by hand
 ```
 
 A full snapshot resets the chain of a network, and only testnet is reset this way:
@@ -91,7 +94,8 @@ example in a switch to another deployment.
 - `GET /runs/<id>` gives the status and report of the run. `GET /runs/<id>/registry-<network>.json`
   and `.validation.json` give its layers and validation reports. R2 holds the same files under
   `runs/<id>/`.
-- `GET /status` shows the Publisher: the active run, the pending run, and the last 20 runs.
+- `GET /status` shows the Publisher: the active run, the pending run, the last 20 runs, and under
+  `hostnames` the CID that the Worker last pointed each hostname at.
 - Without the token, wrangler shows every step of a run, with the error of each attempt:
 
 ```bash
@@ -111,6 +115,9 @@ new mode. A mode needs its credentials: `PINATA_JWT` for `pin`, and also `CLOUDF
 of them, run `NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod` from the pull
 request's branch before you merge.
 
+The first publish run in `live` mode records the CID that each hostname serves, if no record exists.
+See [The first record](#the-first-record).
+
 When you move the mode down, the uploaded credentials stay on the Worker. Remove one with
 `wrangler secret delete`. If the mode change must act on a publish right away, start a manual
 `{"kind":"publish"}`.
@@ -129,9 +136,65 @@ op run --env-file .env.1password -- sh -c 'curl -sX PATCH \
   -d "{\"dnslink\":\"/ipfs/<previous-cid>\"}"'
 ```
 
-Then change `PUBLISH_MODE` to `pin`, so the next publish run does not move the hostname again. The
-listing under [Checking the publishing credentials](#checking-the-publishing-credentials) gives the
-hostname ids.
+The listing under [Checking the publishing credentials](#checking-the-publishing-credentials) gives
+the hostname ids.
+
+You do not need to change `PUBLISH_MODE`. The record of the Worker still names the layer that you
+replaced, so every publish run refuses that network and alerts on Slack. The other network continues
+to publish. When the cause is fixed:
+
+1. Merge the fix to protocol's [`env/`][pi-env]. Its preview shows the alert as an error, and the
+   layer that the fix publishes on the previous CID.
+2. Accept the previous CID with a manual publish run for that network (see
+   [Manual runs](#manual-runs)):
+
+   ```bash
+   '{"kind":"publish","networks":["mainnet"],"acceptLiveCid":"<previous-cid>"}'
+   ```
+
+   The run records the previous CID as the CID of the Worker. Then it generates on that CID, and
+   publishes the fix.
+
+Accept only after the fix merges. The accepting run publishes from the head of the release branch.
+Without the fix, it publishes the wrong layer again.
+
+## A hostname changed outside the Worker
+
+The Worker records, per network, the CID that it last pointed the hostname at. `GET /status` shows
+these records under `hostnames`. Each run starts with a comparison of the live CID and the record. If
+they differ, the hostname serves a layer that the Worker did not publish. Then:
+
+- A publish run does not publish that network. It posts "Registry hostname changed outside the
+  Worker" to Slack, with both CIDs. Each publish run, the cron included, posts the alert again until
+  someone acts.
+- A preview shows the difference as an error on that network, and its check run fails.
+
+Only a token with Web3 Hostnames Write on the zone, such as `CLOUDFLARE_API_TOKEN`, or a person with
+access to the zone can make this change. Look for the change in the audit log of the Web3 gateway.
+
+- **If the change was deliberate,** such as a rollback, accept it. See
+  [Pointing a hostname back](#pointing-a-hostname-back). Before you accept a CID that you did not set,
+  walk its chain as in [Auditing the published chain](#auditing-the-published-chain), and compare its
+  contracts with `env/`.
+- **If it was not deliberate,** treat it as an incident:
+  1. Point the hostname back at the recorded CID, as in
+     [Pointing a hostname back](#pointing-a-hostname-back). The live CID then equals the record, so
+     publishing starts again with no acceptance.
+  2. Rotate `CLOUDFLARE_API_TOKEN` in the infrastructure repository. Then run
+     `scripts/push-secrets.sh` again, so the Worker holds the new token.
+  3. Tell the owners of consumers that follow the hostname, such as api-v3. They read the other layer
+     while the hostname served it.
+
+A publish run marks a CID as pending before it points the hostname at it. If the run stops before it
+confirms the change, the next publish run records that CID. So a failed run of the Worker never causes
+this alert.
+
+### The first record
+
+No record exists before the first publish run in `live` mode. That run records the CID that each
+hostname serves then, and announces each CID on Slack. It trusts that CID, so nothing detects a change
+made before that run. When the first record appears, compare it with the last layer that Slack shows
+as published for that network. Runs in `shadow` and `pin` record nothing.
 
 ## ABIs
 
