@@ -156,7 +156,10 @@ async function handleRuns(request: Request, env: Env, path: string[]): Promise<R
 
   if (request.method === "GET" && path.length === 1) {
     const [id] = path;
-    const status = await (await env.REGISTRY_RUN.get(id)).status();
+    // get() throws for an id Workflows does not know, a run past its retention included
+    const instance = await env.REGISTRY_RUN.get(id).catch(() => null);
+    if (!instance) return json({ error: "not found" }, 404);
+    const status = await instance.status();
     const report = await env.REGISTRY_BUCKET.get(`runs/${id}/report.md`);
     return json({ id, ...status, report: (await report?.text()) ?? null });
   }
