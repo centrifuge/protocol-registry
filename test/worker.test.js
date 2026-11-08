@@ -5,7 +5,7 @@ import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
-import { hostnameReport, toPublish } from "../src/report.ts";
+import { hostnameReport, publishCheck, publishLines, toPublish } from "../src/report.ts";
 import {
   checkHostname,
   HostnameDriftError,
@@ -100,7 +100,7 @@ test("only paths under env/ that feed the registry count as registry changes", (
   assert.equal(touchesRegistryInputs("environment.md"), false);
 });
 
-test("a tag being created starts nothing: protocol-internal builds its ABIs on push", () => {
+test("a tag being created starts nothing: protocol builds its ABIs on push", () => {
   const payload = { repository, ref_type: "tag", ref: "v3.3.0" };
   assert.equal(route("create", payload, config).type, "ignore");
 });
@@ -400,5 +400,73 @@ test("each network publishes on its own outcome: one's errors never hold back th
       toPublish(outcomes).map((o) => o.network),
       expected,
     );
+  }
+});
+
+test("a publish says one line per network it published or refused, without the detail", () => {
+  const hostnames = {
+    mainnet: "registry.centrifuge.io",
+    testnet: "registry.testnet.centrifuge.io",
+  };
+  const addresses = Array.from({ length: 430 }, (_, i) => `  - 11155111 Spoke 0x${i}`).join("\n");
+  const dropsHistory = {
+    network: "testnet",
+    refused: `A full snapshot would drop 430 published contract(s) that are neither in env nor retired:\n${addresses}\n  Retire them first.`,
+  };
+  const orphan = {
+    network: "testnet",
+    validation: {
+      errors: [{ path: "previousRegistry.ipfsHash", message: "A live registry exists. Details." }],
+    },
+  };
+  const unchanged = { network: "mainnet", validation: { errors: [] } };
+  const drifted = {
+    ...unchanged,
+    hostnameDrift:
+      "mainnet: registry.centrifuge.io serves foreign, not published, the CID the Worker last pointed it at. Something other than the Worker changed it.",
+  };
+  const served = { network: "mainnet", cid: "bafkreiabc", served: true };
+
+  for (const [input, expected] of [
+    [{ outcomes: [unchanged, dropsHistory] }, [/testnet .*refused: .*would drop 430 .*retired$/]],
+    [
+      { outcomes: [orphan] },
+      [/testnet .*refused: 1 .*error.*previousRegistry\.ipfsHash.*exists\.$/],
+    ],
+    [
+      { outcomes: [unchanged, dropsHistory], published: [served] },
+      [
+        /mainnet .*published: `bafkreiabc` → https:\/\/registry\.centrifuge\.io$/,
+        /testnet .*refused/,
+      ],
+    ],
+    [
+      { envProblems: ["env/testnet/base.json: no chainId\nmore"] },
+      [/env\/ has 1 problem.*chainId$/],
+    ],
+    [{ outcomes: [drifted] }, [/mainnet .*refused: .*serves foreign, not published, .*at\.$/]],
+    [{ outcomes: [unchanged] }, []],
+  ]) {
+    const lines = publishLines({
+      outcomes: [],
+      envProblems: [],
+      published: [],
+      shadow: [],
+      hostnames,
+      ...input,
+    });
+    assert.equal(lines.length, expected.length);
+    expected.forEach((pattern, i) => assert.match(lines[i], pattern));
+  }
+});
+
+test("a manual publish neither hides the push's check nor marks the release branch red", () => {
+  for (const [reason, refused, expected] of [
+    ["push of abcdef123 by dev", false, { name: "Registry publish", conclusion: "success" }],
+    ["cron", true, { name: "Registry publish", conclusion: "failure" }],
+    ["manual", false, { name: "Registry publish (manual)", conclusion: "success" }],
+    ["manual", true, { name: "Registry publish (manual)", conclusion: "neutral" }],
+  ]) {
+    assert.deepEqual(publishCheck(reason, refused), expected);
   }
 });

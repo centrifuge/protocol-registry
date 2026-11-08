@@ -1,5 +1,5 @@
 /**
- * Which `env/` directory backs each registry, read from a snapshot of protocol-internal's `env/` at
+ * Which `env/` directory backs each registry, read from a snapshot of protocol's `env/` at
  * one commit.
  *
  * The indexer knows two registries, `mainnet` and `testnet`, while `env/` may hold several deployments

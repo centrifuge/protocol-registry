@@ -13,7 +13,7 @@
  *
  * It also keeps, per network, the CID the Worker last pointed the hostname at (HostnameRecord in
  * ./run.ts). That record is what tells a hostname changed with a leaked Web3 token from one the Worker
- * changed, so it lives here and not in R2: protocol-internal's ABI workflow holds a token that writes
+ * changed, so it lives here and not in R2: protocol's ABI workflow holds a token that writes
  * the bucket, and only this Worker's code writes Durable Object storage.
  */
 

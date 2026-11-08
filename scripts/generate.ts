@@ -1,12 +1,12 @@
 /**
  * Generates and validates a registry layer locally, the way the Worker does, without publishing it.
  *
- *     node scripts/generate.ts <mainnet|testnet> --source-repo <protocol-internal checkout> \
+ *     node scripts/generate.ts <mainnet|testnet> --source-repo <protocol checkout> \
  *       [--wrangler-profile <name>] [--mode auto|delta|patch|full] [--source-cid <cid>] \
  *       [--allow-partial-chain] [--allow-history-drop] [--out out]
  *
  * Env comes from the checkout's working tree, tags from its git, ABIs from the bundles
- * protocol-internal's build-abis.yml uploads to R2, read with wrangler under the operator's login (or
+ * protocol's build-abis.yml uploads to R2, read with wrangler under the operator's login (or
  * the given auth profile) and kept in cache/abis (see scripts/abi-bundles.ts). Fetched layers are
  * cached in cache/registry-chain.
  *

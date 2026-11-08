@@ -1,12 +1,13 @@
 /**
- * What a run reports: the Registry Preview a pull request's check run carries, and the Slack message
- * a publish sends. One rendering of the same facts, so a reviewer and the channel read the same
- * numbers.
+ * What a run reports: the Registry Preview a pull request's check run carries, and for a publish, a
+ * check run on the published commit with the same report, and a short Slack message that links to
+ * it. One rendering of the same facts, so a reviewer and the channel read the same numbers.
  */
 
 import type { GenerateSummary } from "./core/generate.ts";
 import type { Finding, Layer, Network } from "./core/types.ts";
 import type { ValidationReport } from "./core/validate.ts";
+import type { CheckConclusion } from "./io/github.ts";
 
 export interface RetiredRow {
   chain: string;
@@ -48,16 +49,15 @@ export function hostnameReport(checks: HostnameCheck[], hostnames: Record<Networ
   return checks
     .flatMap(({ network, liveCid, drift, recorded }) => {
       const hostname = hostnames[network];
-      if (drift)
-        return [`:rotating_light: *Registry hostname changed outside the Worker*\n>${drift}`];
+      if (drift) return [`🚨 Registry hostname changed outside the Worker\n>${drift}`];
       if (recorded === "seeded") {
         return [
-          `:information_source: *${network}*: no CID was recorded for ${hostname}, so this run recorded the one it serves, \`${liveCid}\`. A CID the Worker did not publish now stops ${network} from publishing.`,
+          `ℹ️ ${network} registry: no CID was recorded for ${hostname}, so this run recorded the one it serves, \`${liveCid}\`. A CID the Worker did not publish now stops ${network} from publishing.`,
         ];
       }
       if (recorded === "accepted") {
         return [
-          `:white_check_mark: *${network}*: accepted \`${liveCid}\`, which ${hostname} serves, as the CID to publish on.`,
+          `✅ ${network} registry: accepted \`${liveCid}\`, which ${hostname} serves, as the CID to publish on.`,
         ];
       }
       return [];
@@ -186,6 +186,80 @@ export function headline(outcomes: NetworkOutcome[]): string {
       return `${o.network}: ${o.validation.summary.mode}, ${o.contractsInLayer ?? 0} contract(s)${retired}`;
     })
     .join(" · ");
+}
+
+/** A layer a publish pinned; `served` once the hostname points at it (PUBLISH_MODE live). */
+export interface Published {
+  network: Network;
+  cid: string;
+  served: boolean;
+}
+
+export interface PublishReport {
+  outcomes: NetworkOutcome[];
+  envProblems: string[];
+  published: Published[];
+  /** PUBLISH_MODE shadow: the networks that would have been published. */
+  shadow: Network[];
+  hostnames: Record<Network, string>;
+}
+
+/** The first line, or its first sentence, of a message: the rest is in the full report. */
+function gist(text: string, max = 200): string {
+  const line = text.split("\n")[0].replace(/:\s*$/, "");
+  const sentence = /^.*?\.(?=\s)/.exec(line)?.[0] ?? line;
+  return sentence.length > max ? `${sentence.slice(0, max - 1)}…` : sentence;
+}
+
+function refusalGist(outcome: NetworkOutcome): string {
+  if (outcome.hostnameDrift) return gist(outcome.hostnameDrift);
+  if (outcome.refused) return gist(outcome.refused);
+  const errors = outcome.validation?.errors ?? [];
+  return `${errors.length} indexer error(s), the first at ${errors[0].path}: ${gist(errors[0].message)}`;
+}
+
+/**
+ * What a publish did, one line per network it published or refused, for Slack and the publish check
+ * run alike. A network with nothing to publish gets no line, so a run that changes nothing says
+ * nothing. Detail stays in the report: a refusal can list hundreds of addresses.
+ */
+export function publishLines(report: PublishReport): string[] {
+  const { outcomes, envProblems, published, shadow, hostnames } = report;
+  if (envProblems.length > 0) {
+    return [
+      `❌ Registry publish refused: env/ has ${envProblems.length} problem(s), the first: ${gist(envProblems[0])}`,
+    ];
+  }
+  const lines = published.map(({ network, cid, served }) =>
+    served
+      ? `✅ ${network} registry published: \`${cid}\` → https://${hostnames[network]}`
+      : `📌 ${network} registry pinned, not served (PUBLISH_MODE is pin): https://centrifuge-files.mypinata.cloud/ipfs/${cid}`,
+  );
+  for (const network of shadow) {
+    lines.push(
+      `👻 ${network} registry would be published (PUBLISH_MODE is shadow): \`GET /runs/<run>/registry-${network}.json\``,
+    );
+  }
+  for (const outcome of outcomes.filter((o) => hasErrors([o]))) {
+    lines.push(`❌ ${outcome.network} registry refused: ${refusalGist(outcome)}`);
+  }
+  return lines;
+}
+
+/**
+ * The check run a publish leaves on the commit it published from. A manual run gets its own name, so
+ * it never hides the result of the push that published the commit. Its refusal is neutral: a run
+ * someone tried by hand does not mark the release branch red.
+ */
+export function publishCheck(
+  reason: string,
+  refused: boolean,
+): { name: string; conclusion: CheckConclusion } {
+  const manual = reason === "manual";
+  return {
+    name: manual ? "Registry publish (manual)" : "Registry publish",
+    conclusion: !refused ? "success" : manual ? "neutral" : "failure",
+  };
 }
 
 export function previewMarkdown(outcomes: NetworkOutcome[], envProblems: string[] = []): string {
