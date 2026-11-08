@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploys the Worker from a commit on main, labelled the way the other Workers' deployments are: the
 # version's message names the commit (and the PUBLISH_MODE it runs in), and its tag is the short sha,
-# so the Cloudflare dashboard shows what is running.
+# so the Cloudflare dashboard shows what is running. .github/workflows/deploy.yml runs it on every
+# push to main.
 #
 #   NODE_SHIMS_MODE=local scripts/deploy.sh [<wrangler args>]
 #
@@ -25,4 +26,8 @@ fi
 sha=$(git rev-parse --short=7 HEAD)
 mode=$(grep -oE '"PUBLISH_MODE": *"[^"]*"' wrangler.jsonc | sed -E 's/.*"([^"]*)"$/\1/')
 echo ">>> Deploying $sha with PUBLISH_MODE $mode" >&2
+# In GitHub Actions, the deploy workflow's job summary names them
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  printf 'sha=%s\nmode=%s\n' "$sha" "$mode" >>"$GITHUB_OUTPUT"
+fi
 exec pnpm exec wrangler deploy --message "Deployed commit: $sha (PUBLISH_MODE $mode)" --tag "$sha" "$@"

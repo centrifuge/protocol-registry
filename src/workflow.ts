@@ -3,7 +3,8 @@
  * run that waits on an ABI build or an unreachable gateway resumes where it stopped.
  *
  *   commit → env check → ABIs → generate each network → preview: the PR's check run
- *                                                      → publish: pin, swap the dnslink, Slack
+ *                                                      → publish: pin, swap the dnslink, the
+ *                                                        commit's check run, Slack
  *
  * A publish run is started by the Publisher (one at a time); a preview by a pull request.
  */
@@ -14,9 +15,23 @@ import { NonRetryableError } from "cloudflare:workflows";
 import { github, hostnames, runConfig } from "./config.ts";
 import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
-import { branchHead, completeCheckRun, type CheckRunOutput } from "./io/github.ts";
+import {
+  branchHead,
+  completeCheckRun,
+  createCompletedCheckRun,
+  type CheckRunOutput,
+} from "./io/github.ts";
 import { notifySlack } from "./io/publish.ts";
-import { hasErrors, headline, previewMarkdown, toPublish, type NetworkOutcome } from "./report.ts";
+import {
+  hasErrors,
+  headline,
+  previewMarkdown,
+  publishCheck,
+  publishLines,
+  toPublish,
+  type NetworkOutcome,
+  type Published,
+} from "./report.ts";
 import {
   checkEnv,
   missingAbis,
@@ -52,12 +67,6 @@ export interface RunResult {
   published: Published[];
   /** PUBLISH_MODE shadow: what would have been published. */
   shadow: Network[];
-}
-
-interface Published {
-  network: Network;
-  cid: string;
-  served: boolean;
 }
 
 const reportKey = (runId: string) => `runs/${runId}/report.md`;
@@ -181,7 +190,7 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
     await completeCheckRun(github(this.env), this.env.SOURCE_REPO, id, conclusion, output);
   }
 
-  /** The check run of a preview, or the Slack message of a publish. */
+  /** The check run of a preview; for a publish, a check run on the commit and a Slack message. */
   private async report(
     params: RunParams,
     runId: string,
@@ -205,26 +214,13 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
     }
     if (params.kind === "preview") return; // a manual preview is read from GET /runs/<id>
 
-    const hostname = (network: Network) => hostnames(this.env)[network];
-    const lines: string[] = [];
-    for (const { network, cid, served } of published) {
-      lines.push(
-        served
-          ? `:white_check_mark: *${network}* published: \`${cid}\` → https://${hostname(network)}`
-          : `:pushpin: *${network}* pinned, not served (PUBLISH_MODE is pin): https://centrifuge-files.mypinata.cloud/ipfs/${cid}`,
-      );
-    }
-    for (const network of shadow) {
-      lines.push(
-        `:ghost: *${network}*: would publish (PUBLISH_MODE is shadow); the layer is at \`GET /runs/<run>/registry-${network}.json\``,
-      );
-    }
-    if (failed) {
-      // A network refused beside one published is named, so the message does not read as all refused
-      const refused = outcomes.filter((o) => hasErrors([o])).map((o) => o.network);
-      const which = published.length > 0 || shadow.length > 0 ? ` for ${refused.join(", ")}` : "";
-      lines.push(`:x: *Registry publish refused${which}* — ${title}`);
-    }
+    const lines = publishLines({
+      outcomes,
+      envProblems,
+      published,
+      shadow,
+      hostnames: hostnames(this.env),
+    });
 
     // A reconcile that finds nothing to publish is the steady state, and not worth a message. One
     // that would say the same as the last (a refusal nobody acted on yet, a shadow or pinned layer
@@ -233,15 +229,38 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
       await this.env.REGISTRY_BUCKET.delete(LAST_CRON_MESSAGE_KEY);
       return;
     }
-    const message = `${lines.join("\n")}${failed ? `\n\`\`\`${markdown.slice(0, 2500)}\`\`\`` : ""}`;
+    const message = lines.join("\n");
     if (params.reason === "cron") {
       const last = await (await this.env.REGISTRY_BUCKET.get(LAST_CRON_MESSAGE_KEY))?.text();
       if (last === message) return;
-      await this.env.REGISTRY_BUCKET.put(LAST_CRON_MESSAGE_KEY, message);
+    }
+
+    // Slack carries one line per network; the full report goes where anyone with access to the
+    // source repository can read it
+    let details: string;
+    try {
+      const url = await createCompletedCheckRun(
+        github(this.env),
+        this.env.SOURCE_REPO,
+        sha,
+        publishCheck(params.reason, failed),
+        {
+          title,
+          summary: `${message}\n\n${markdown}---\n*Publish run \`${runId}\` (${params.reason}), from \`${sha.slice(0, 9)}\` of \`${this.env.SOURCE_BRANCH}\`.*`,
+        },
+      );
+      details = `<${url}|Full report>`;
+    } catch (error) {
+      // The publish is done by now: a report GitHub did not take must not fail the run
+      console.error(`Could not create the publish check run: ${(error as Error).message}`);
+      details = `Full report: \`GET /runs/${runId}\` (the GitHub check run could not be created)`;
     }
     await notifySlack(
       this.env.SLACK_WEBHOOK_URL,
-      `${message}\n_${params.reason}, \`${sha.slice(0, 9)}\` of ${this.env.SOURCE_BRANCH}, run \`${runId}\`_`,
+      `${message}\n${details}\n_${params.reason}, \`${sha.slice(0, 9)}\` of ${this.env.SOURCE_BRANCH}, run \`${runId}\`_`,
     );
+    // Recorded once sent, so a retry after a failed post sends it
+    if (params.reason === "cron")
+      await this.env.REGISTRY_BUCKET.put(LAST_CRON_MESSAGE_KEY, message);
   }
 }

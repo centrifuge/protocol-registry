@@ -34,7 +34,7 @@ format. [operations.md](operations.md) describes day-to-day operation.
 | RegistryRun (Workflow)                           | One run, as durable steps. Each step retries on its own: read `env/`, check it, find the ABIs, generate and validate each network, then preview or publish.                                                            |
 | Pinata                                           | Pins each published layer to IPFS.                                                                                                                                                                                     |
 | Web3 gateway hostnames                           | `registry.centrifuge.io` and `registry.testnet.centrifuge.io`. Each hostname points at the CID of a layer.                                                                                                             |
-| Slack                                            | Receives a message for each publish, refusal and failure.                                                                                                                                                              |
+| Slack                                            | Receives a short message for each publish, refusal and failure. A publish or refusal message links to the full report on GitHub.                                                                                       |
 | Consumers                                        | Indexers and apps that read the chain: api-v3, event-lake and the apps built on it.                                                                                                                                    |
 
 ## The flow
@@ -60,6 +60,7 @@ flowchart LR
   RR -->|walk the published chain| IPFS[("IPFS gateways")]
 
   RR -->|preview| check["Registry preview check run on the PR"]
+  RR -->|publish| pcheck["Registry publish check run on the commit"]
   RR -->|"publish: pin"| pinata["Pinata"]
   RR -->|"publish: point DNSLink"| gw["Web3 gateway hostname"]
   RR --> slack["Slack"]
@@ -106,8 +107,16 @@ flowchart LR
       the run checks that the hostname still serves the CID that the layer was built on. If something
       else published a layer in between, the run stops, because the new CID would orphan that layer.
 
-   The run judges each network on its own, so an error on testnet does not stop mainnet. Slack gets one
-   message per publish run. The message names what the run published, pinned or refused.
+   The run judges each network on its own, so an error on testnet does not stop mainnet.
+
+   The run then reports in two places:
+   - A **Registry publish** check run on the commit it published from holds the full report. Anyone
+     who can read protocol can open it.
+   - Slack gets one message per publish run. The message has one line for each network that the run
+     published, pinned or refused, and a link to the check run.
+
+   A manual run reports on a **Registry publish (manual)** check run instead. Its refusal is neutral,
+   so a run that someone tries by hand does not mark the release branch red.
 
 5. **The cron reconciles.** Every six hours, the Worker asks for a publish run. So the Worker retries a
    webhook that GitHub dropped, or a run that failed, before anyone notices. A run with nothing to
@@ -136,10 +145,10 @@ cannot block publishing. Previews do not use the Publisher, because they publish
 | `pin`    |     ✓     |      ✓       |                     | `PINATA_JWT`                         |
 | `live`   |     ✓     |      ✓       |          ✓          | `PINATA_JWT`, `CLOUDFLARE_API_TOKEN` |
 
-`PUBLISH_MODE` is a variable in `wrangler.jsonc`. To change it, commit the change and deploy the Worker.
-The Worker holds only the credentials that its mode needs, because `scripts/push-secrets.sh` uploads
-them by mode. A mode without its credentials refuses to run. It does not do less instead. Until
-`live`, the Worker cannot change what the hostnames serve.
+`PUBLISH_MODE` is a variable in `wrangler.jsonc`. To change it, merge a change to `main`.
+The merge deploys the Worker. The Worker holds only the credentials that its mode needs, because
+`scripts/push-secrets.sh` uploads them by mode. A mode without its credentials refuses to run. It
+does not do less instead. Until `live`, the Worker cannot change what the hostnames serve.
 
 In `pin` mode, the Worker pins a publishable layer and posts its CID to Slack, but nothing points at the
 layer. So `pin` is the place to inspect a real layer before a hostname serves it.
@@ -204,8 +213,8 @@ true.
   scripts write it, and nothing else feeds the registry. The Worker does not publish a contract that is
   deployed but not recorded. It publishes a config edited by hand as written.
 - **One release branch publishes.** `SOURCE_BRANCH` names it. Other live branches publish nothing. A
-  new release reaches the registry only after `SOURCE_BRANCH` names its branch and someone deploys the
-  Worker.
+  new release reaches the registry only after a change that sets `SOURCE_BRANCH` to its branch merges
+  to `main`. The merge deploys the Worker.
 - **Every config entry has an integer `blockNumber`.** The Worker derives the start block of the chain
   from these numbers. Generation refuses an entry without one. It does not fetch the number from
   elsewhere.
@@ -263,8 +272,8 @@ true.
 - **Credentials follow the mode.** The Worker holds only what `PUBLISH_MODE` needs.
   `scripts/push-secrets.sh` uploads it. After you rotate a secret, run the script again. A mode that
   misses its credential fails every publish run. It does not do less instead.
-- **Deploys are manual.** Someone with deploy access deploys a commit on `main` with
-  `scripts/deploy.sh`.
+- **A merge to `main` deploys.** The "Deploy" workflow runs `scripts/deploy.sh` in the `production`
+  environment.
 - **The GitHub App stays installed on protocol,** with the webhook secret that the Worker
   holds. Without its events, previews stop, and publishing waits for the cron every six hours.
 
@@ -275,9 +284,10 @@ true.
 | Configs, `retired.json`, `versions.json`, `registry.json` | protocol, [`env/`][pi-env] on the release branch                                                                                                                                                                                                                                                    |
 | ABI builds                                                | protocol `main`, [`.github/workflows/build-abis.yml`][pi-build-abis], with the repository secrets `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`                                                                                                                                                       |
 | R2 bucket `centrifuge-protocol-registry`                  | `abis/<tag>/` (ABI bundles), `layers/<cid>.json` (published layers, cached), `snapshots/<sha>.json` (protocol's `env/` at a commit), `runs/<id>/` (the layers, validation and report of each run). The infrastructure repository holds the bucket and the R2 token. See the README's Setup section. |
-| The Worker                                                | This repository. Settings are in `wrangler.jsonc` (`SOURCE_REPO`, `SOURCE_BRANCH`, `PUBLISH_MODE`, hostnames, zone). Deploy it with `scripts/deploy.sh`, which labels each version with its commit.                                                                                                 |
+| The Worker                                                | This repository. Settings are in `wrangler.jsonc` (`SOURCE_REPO`, `SOURCE_BRANCH`, `PUBLISH_MODE`, hostnames, zone). A merge to `main` deploys it with `scripts/deploy.sh`, which labels each version with its commit.                                                                              |
 | Worker secrets                                            | The 1Password Environment "protocol-registry Worker": `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `MANUAL_TRIGGER_TOKEN`, `PINATA_JWT`. Upload them with `scripts/push-secrets.sh`.                                                                    |
 | `CLOUDFLARE_API_TOKEN`                                    | The infrastructure repository, which also rotates it. `.env.1password` references its 1Password item.                                                                                                                                                                                               |
+| `CLOUDFLARE_DEPLOY_API_TOKEN`                             | The infrastructure repository, which pushes it to this repository's `production` environment. That environment allows deployments from `main` only.                                                                                                                                                 |
 | The GitHub App                                            | GitHub organization settings. Installed on protocol only.                                                                                                                                                                                                                                           |
 | Hostnames                                                 | Web3 gateways on the `centrifuge.io` zone                                                                                                                                                                                                                                                           |
 | `@centrifuge/registry-core`                               | npmjs. This repository's `publish-registry-core.yml` publishes it on a GitHub release, in the `release` environment.                                                                                                                                                                                |
@@ -296,7 +306,7 @@ protocol (`live-v3.4`), or when protocol's `env/` moves back to `main`.
    - If its `env/` matches what is published, the preview shows nothing to publish.
    - If not, the first publish run from that branch publishes the difference.
 2. Set `SOURCE_BRANCH` in `wrangler.jsonc` to the new branch, and merge the change.
-3. Deploy the Worker with `scripts/deploy.sh`.
+3. The merge deploys the Worker. Check that the "Deploy" workflow run for the merge passes.
 
 **The ABIs of new tags.** protocol's
 [`.github/workflows/build-abis.yml`][pi-build-abis] builds them. It does

@@ -24,7 +24,9 @@ The usual case needs no action:
 - A pull request into protocol's [release branch][pi-branch] that touches [`env/`][pi-env]
   gets a **Registry preview** check run. The check run shows the layer that each network would get, its retirements, and
   every finding. "Re-run" on the check runs it again.
-- A merge of that pull request publishes, as far as `PUBLISH_MODE` allows. Slack says what happened.
+- A merge of that pull request publishes, as far as `PUBLISH_MODE` allows. Slack says what happened,
+  in one line for each network, with a link to the **Registry publish** check run on the commit. The
+  check run holds the full report.
 - The cron also starts a publish run every six hours. So the Worker retries a dropped webhook or a
   failed run.
 
@@ -84,6 +86,8 @@ example in a switch to another deployment.
 
 `POST /runs` answers with the run id. Then:
 
+- The Slack message of a manual publish links to its **Registry publish (manual)** check run on the
+  protocol commit. The check run holds the full report, and reading it needs no token.
 - `GET /runs/<id>` gives the status and report of the run. `GET /runs/<id>/registry-<network>.json`
   and `.validation.json` give its layers and validation reports. R2 holds the same files under
   `runs/<id>/`.
@@ -101,16 +105,11 @@ tag (see [ABIs](#abis)).
 
 ## Changing `PUBLISH_MODE`
 
-The mode is in `wrangler.jsonc`, so a pull request changes it. To move the mode up:
-
-1. Merge the change to `wrangler.jsonc`.
-2. Run `NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod`. The script reads the
-   mode and uploads the credentials it needs: `PINATA_JWT` for `pin`, and also
-   `CLOUDFLARE_API_TOKEN` for `live`.
-3. From `main`, run `NODE_SHIMS_MODE=local scripts/deploy.sh --profile centrifuge-prod`.
-
-Upload the secrets before the deploy, so the Worker holds a credential before its mode uses it. A mode
-whose credentials are missing fails every publish run.
+The mode is in `wrangler.jsonc`, so a pull request changes it. The merge deploys the Worker with the
+new mode. A mode needs its credentials: `PINATA_JWT` for `pin`, and also `CLOUDFLARE_API_TOKEN` for
+`live`. A mode whose credentials are missing fails every publish run. If the Worker does not hold one
+of them, run `NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod` from the pull
+request's branch before you merge.
 
 When you move the mode down, the uploaded credentials stay on the Worker. Remove one with
 `wrangler secret delete`. If the mode change must act on a publish right away, start a manual
