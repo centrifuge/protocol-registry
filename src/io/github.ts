@@ -1,7 +1,7 @@
 /**
  * GitHub, as the protocol-registry GitHub App: reading protocol-internal (env at a commit, tags,
- * commits) and reporting on its pull requests (check runs). The App is installed on protocol-internal
- * alone, with no Actions permission.
+ * commits) and reporting on its pull requests and published commits (check runs). The App is
+ * installed on protocol-internal alone, with no Actions permission.
  *
  * The App authenticates with a JWT signed by its private key, exchanged for an installation token
  * that lasts an hour.
@@ -243,11 +243,13 @@ export async function createCheckRun(
   return run.id;
 }
 
+export type CheckConclusion = "success" | "failure" | "neutral";
+
 export async function completeCheckRun(
   gh: GitHub,
   repo: string,
   id: number,
-  conclusion: "success" | "failure" | "neutral",
+  conclusion: CheckConclusion,
   output: CheckRunOutput,
 ): Promise<void> {
   await gh("PATCH", `/repos/${repo}/check-runs/${id}`, {
@@ -255,6 +257,24 @@ export async function completeCheckRun(
     conclusion,
     output: clip(output),
   });
+}
+
+/** A check run that is complete when created, for a run that reports once. Returns its page. */
+export async function createCompletedCheckRun(
+  gh: GitHub,
+  repo: string,
+  headSha: string,
+  check: { name: string; conclusion: CheckConclusion },
+  output: CheckRunOutput,
+): Promise<string> {
+  const run = await gh<{ html_url: string }>("POST", `/repos/${repo}/check-runs`, {
+    name: check.name,
+    head_sha: headSha,
+    status: "completed",
+    conclusion: check.conclusion,
+    output: clip(output),
+  });
+  return run.html_url;
 }
 
 /** Paths a pull request changes. GitHub lists at most 3000. */

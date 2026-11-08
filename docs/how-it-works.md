@@ -34,7 +34,7 @@ format. [operations.md](operations.md) describes day-to-day operation.
 | RegistryRun (Workflow)                                    | One run, as durable steps. Each step retries on its own: read `env/`, check it, find the ABIs, generate and validate each network, then preview or publish.                                                                     |
 | Pinata                                                    | Pins each published layer to IPFS.                                                                                                                                                                                              |
 | Cloudflare Web3 hostnames                                 | `registry.centrifuge.io` and `registry.testnet.centrifuge.io`. Each hostname points at the CID of a layer.                                                                                                                      |
-| Slack                                                     | Receives a message for each publish, refusal and failure.                                                                                                                                                                       |
+| Slack                                                     | Receives a short message for each publish, refusal and failure. A publish or refusal message links to the full report on GitHub.                                                                                                |
 | Consumers                                                 | Indexers and apps that read the chain: api-v3, event-lake and the apps built on it.                                                                                                                                             |
 
 ## The flow
@@ -60,6 +60,7 @@ flowchart LR
   RR -->|walk the published chain| IPFS[("IPFS gateways")]
 
   RR -->|preview| check["Registry preview check run on the PR"]
+  RR -->|publish| pcheck["Registry publish check run on the commit"]
   RR -->|"publish: pin"| pinata["Pinata"]
   RR -->|"publish: point DNSLink"| cf["Cloudflare Web3 hostname"]
   RR --> slack["Slack"]
@@ -106,8 +107,16 @@ flowchart LR
       the run checks that the hostname still serves the CID that the layer was built on. If something
       else published a layer in between, the run stops, because the new CID would orphan that layer.
 
-   The run judges each network on its own, so an error on testnet does not stop mainnet. Slack gets one
-   message per publish run. The message names what the run published, pinned or refused.
+   The run judges each network on its own, so an error on testnet does not stop mainnet.
+
+   The run then reports in two places:
+   - A **Registry publish** check run on the commit it published from holds the full report. Anyone
+     who can read protocol-internal can open it.
+   - Slack gets one message per publish run. The message has one line for each network that the run
+     published, pinned or refused, and a link to the check run.
+
+   A manual run reports on a **Registry publish (manual)** check run instead. Its refusal is neutral,
+   so a run that someone tries by hand does not mark the release branch red.
 
 5. **The cron reconciles.** Every six hours, the Worker asks for a publish run. So the Worker retries a
    webhook that GitHub dropped, or a run that failed, before anyone notices. A run with nothing to
