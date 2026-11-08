@@ -72,6 +72,9 @@ Examples of `-d` bodies:
 A full snapshot resets the chain of a network, and only testnet is reset this way:
 
 - `POST /runs` refuses `"mode": "full"` for mainnet.
+- `sourceCid` and `acceptLiveCid` take the canonical CIDv1 (`baf…`, lower case), as a DNSLink or
+  `previousRegistry.ipfsHash` names a layer. A CIDv0 (`Qm…`) or another spelling is refused, because
+  layer verification would refuse it on every attempt.
 - While a mainnet layer is live, validation refuses an unlinked mainnet layer (see
   [Indexer hard requirements](registry-format.md#indexer-hard-requirements)).
 

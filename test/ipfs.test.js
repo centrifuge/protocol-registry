@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LayerVerificationError } from "../src/core/layer-verification-error.ts";
 import { layerFromBytes } from "../src/core/verify.ts";
-import { IPFS_GATEWAYS, fetchRegistryFromIpfs, isValidIpfsHash } from "../src/io/ipfs.ts";
+import { IPFS_GATEWAYS, fetchRegistryFromIpfs } from "../src/io/ipfs.ts";
 import {
   MAINNET_HEAD,
   MAINNET_HEAD_PARENT,
@@ -21,14 +21,6 @@ test("gateway list has no retired gateways and leads with Centrifuge's own", () 
   assert.ok(!IPFS_GATEWAYS.some((gateway) => gateway.includes("cloudflare-ipfs.com")));
   assert.match(IPFS_GATEWAYS[0], /centrifuge-files\.mypinata\.cloud/);
   assert.ok(IPFS_GATEWAYS.length >= 3, "keeps public fallbacks");
-});
-
-test("isValidIpfsHash accepts v0 and v1 CIDs and rejects other strings", () => {
-  assert.ok(isValidIpfsHash("bafybeif4rypoowonna5fkrekaitqzi4c55g2fn2ky2y5cpp3bobvzijizi"));
-  assert.ok(isValidIpfsHash("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
-  assert.ok(!isValidIpfsHash("not-a-cid"));
-  assert.ok(!isValidIpfsHash(""));
-  assert.ok(!isValidIpfsHash(null));
 });
 
 test("fetchRegistryFromIpfs tries gateways in order and returns the first success", async () => {

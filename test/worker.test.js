@@ -6,6 +6,7 @@ import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
 import { RUN_MAX_AGE_MS, UNREADABLE_FOR_MS, verdict } from "../src/liveness.ts";
+import { manualParams } from "../src/manual.ts";
 import { hostnameReport, publishCheck, publishLines, toPublish } from "../src/report.ts";
 import {
   checkHostname,
@@ -526,4 +527,26 @@ test("the Publisher gives up on a run whose status stays unreadable, and only th
   assert.equal(old.action, "lost");
   assert.match(old.error, /instance\.not_found/);
   assert.equal(verdict({ startedAt }, failed, startedAt + RUN_MAX_AGE_MS - 1).action, "poll");
+});
+
+test("a manual run takes a CID only as the canonical CIDv1 a layer is named by", () => {
+  const canonical = "bafybeif4rypoowonna5fkrekaitqzi4c55g2fn2ky2y5cpp3bobvzijizi";
+  const refused = [
+    ["a CIDv0", "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"],
+    ["an upper-case spelling of a CIDv1", canonical.toUpperCase()],
+    ["not a CID", "not-a-cid"],
+  ];
+  for (const [field, extra] of [
+    ["sourceCid", { kind: "preview" }],
+    ["acceptLiveCid", { kind: "publish" }],
+  ]) {
+    const accepted = manualParams({ ...extra, networks: ["testnet"], [field]: canonical });
+    assert.equal(typeof accepted, "object", `${field}: canonical CIDv1 accepted`);
+    assert.equal(accepted[field], canonical);
+    for (const [what, value] of refused) {
+      const result = manualParams({ ...extra, networks: ["testnet"], [field]: value });
+      assert.equal(typeof result, "string", `${field}: ${what} refused`);
+      assert.match(result, new RegExp(field), `${field}: the refusal names the field`);
+    }
+  }
 });
