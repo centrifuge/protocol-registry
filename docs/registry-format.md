@@ -43,6 +43,10 @@ of Pinata, `ipfs.io` and `dweb.link`, so one unreliable gateway cannot fail a ru
 never change, so the Worker caches every fetched layer by CID. The Worker uses `layers/<cid>.json` in
 R2. Local runs use `cache/registry-chain/`.
 
+The Worker checks the bytes of every layer against its CID before it parses them, from a gateway or
+from the cache. A gateway that serves other bytes counts as a failed gateway. A cache entry that does
+not match counts as a miss, and the next fetch overwrites it.
+
 ## What "changed since" is measured against
 
 The Worker computes a layer against the **accumulated state of the whole published chain**. The
@@ -60,6 +64,9 @@ retirements already in force, which only the whole chain knows.
   than 500 layers. Generation then refuses to emit an inflated delta. `allowPartialChain` overrides this for a
   manual run. Then expect the run to emit published contracts again, and to emit retirements in force
   again or miss them.
+- **A layer below the live layer does not match its CID:** no gateway serves the bytes that the CID
+  names, and a gateway serves other bytes. Generation refuses, with no override. Other bytes are
+  evidence of a forged or damaged layer, not of an outage.
 - **The run cannot read the live layer:** generation refuses, with no override. There would be nothing
   to compare against, and every contract would read as new. The layer would also carry
   `previousRegistry: null`, so an outage would look like a base registry. To publish a base snapshot on

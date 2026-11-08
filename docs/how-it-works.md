@@ -238,6 +238,10 @@ a new CID, not only the registry hostnames. For this reason, the Worker holds it
   shows the exact layers it would publish, with every finding, before it merges.
 - **Deltas against the whole chain.** The Worker computes a layer against the accumulated state of
   every published layer, never against the newest layer alone. So a layer carries exactly what changed.
+- **Verified layers.** The Worker checks the bytes of every layer that it reads against the CID of the
+  layer, from an IPFS gateway or from the R2 cache. It skips a gateway that serves other bytes. It
+  fetches a cache entry that does not match again, and overwrites it. If no gateway serves the correct
+  bytes, the walk stops. When a gateway served other bytes, no override applies.
 - **Refusals instead of guesses.** A run stops, and publishes nothing, when it:
   - cannot read the live layer.
   - cannot walk the whole chain.
@@ -327,7 +331,8 @@ true.
 - **Pinata's layout stays as it is.** The Worker uploads layers through the public files API of Pinata.
   That API gives CIDv1, raw leaves, 256 KiB chunks and a balanced DAG of 174 links. `verifyLayer` in
   `@centrifuge/registry-core` rebuilds CIDs the same way. If Pinata changed its layout, new layers
-  would fail verification.
+  would fail verification. Consumers would refuse them, and so would the next walk of the Worker, which
+  then publishes nothing.
 - **Every published layer stays pinned.** Consumers walk the chain back to the base snapshot, so every
   layer must stay retrievable. The Worker caches layers in R2. Consumers do not.
 - **Mainnet is never reset.** Its chain only grows. A testnet reset is a full snapshot that a run asks

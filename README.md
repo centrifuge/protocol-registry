@@ -72,8 +72,9 @@ of [pull request #522](https://github.com/centrifuge/protocol-internal/pull/522)
 verified to produce byte-identical layers and validation reports (see the commits that ported it). It
 has no I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags and ABIs
 through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
-`scripts/generate.ts` runs the same thing locally. `src/core/` also holds layer verification and
-history diffing for other consumers, published as [`@centrifuge/registry-core`](#package).
+`scripts/generate.ts` runs the same thing locally. `src/core/` also holds layer verification, which
+`src/io/ipfs.ts` applies to every layer it reads, and history diffing, both published for other
+consumers as [`@centrifuge/registry-core`](#package).
 
 ## Inputs: protocol's env/
 
@@ -116,9 +117,14 @@ there is nothing to measure against, and the result would present an outage as a
 layer must declare the network being generated; a layer of the other network, or one declaring
 none, fails the run.
 
-Fetched layers are cached in R2 by CID (`layers/<cid>.json`), so a layer is fetched from IPFS once.
-The Worker's own layer fetches (`fetchRegistryFromIpfs` and that cache) do not check the bytes against
-their CIDs; checking is what consumers do with the package (see [Package](#package)).
+Fetched layers are cached in R2 by CID (`layers/<cid>.json`), as the bytes a gateway served, so a
+layer is fetched from IPFS once. Every layer the Worker reads, the tip included, is checked against
+its CID with `layerFromBytes` before it is parsed, whether it comes from a gateway or from that cache
+(see [What verification proves](#what-verification-proves)). A gateway that serves other bytes is
+skipped like one that is down, and a cache entry that does not match is fetched again and
+overwritten. A layer below the tip that no gateway serves matching bytes for ends the walk: if some
+gateway served other bytes, as a verification failure that `allowPartialChain` does not override;
+otherwise as an unreachable layer. A tip that no gateway serves matching bytes for cannot be read.
 
 ### Modes
 

@@ -18,6 +18,7 @@ import {
   chain,
   contract,
   fakeFetch,
+  flipByte,
   ipfsFetcher,
   layer,
   realLayerBytes,
@@ -130,6 +131,20 @@ test("flattenRegistryChain keeps the newest network and adapter metadata", () =>
   assert.deepEqual(accumulated["1"].adapters, { axelar: {} });
 });
 
+/**
+ * A fetchLayer over synthetic layers held by CID, recording what it fetched. Their CIDs are names,
+ * not hashes, so no gateway fetch could verify them: the IPFS client is tested in ipfs.test.js.
+ */
+function memoryFetcher(layers) {
+  const fetched = [];
+  const fetchLayer = async (cid) => {
+    fetched.push(cid);
+    if (!layers[cid]) throw new Error(`could not fetch ${cid}`);
+    return structuredClone(layers[cid]);
+  };
+  return { fetchLayer, fetched };
+}
+
 test("collectRegistryChain walks to the base snapshot and returns layers oldest to newest", async () => {
   const base = layer({ version: "v1", chains: { 1: chain({ hub: "0xhub" }) } });
   const middle = layer({
@@ -142,9 +157,9 @@ test("collectRegistryChain walks to the base snapshot and returns layers oldest 
     chains: { 1: chain({ vault: "0xvault" }) },
     previousCid: "cidMiddle",
   });
-  const { fetchImpl } = fakeFetch({ cidBase: base, cidMiddle: middle });
+  const { fetchLayer } = memoryFetcher({ cidBase: base, cidMiddle: middle });
 
-  const result = await collectRegistryChain(tip, { fetchLayer: ipfsFetcher(fetchImpl) });
+  const result = await collectRegistryChain(tip, { fetchLayer });
 
   assert.equal(result.complete, true);
   assert.equal(result.reason, null);
@@ -156,10 +171,10 @@ test("collectRegistryChain walks to the base snapshot and returns layers oldest 
 
 test("collectRegistryChain reports a cycle instead of looping forever", async () => {
   const looping = layer({ version: "v2", chains: {}, previousCid: "cidLoop" });
-  const { fetchImpl } = fakeFetch({ cidLoop: looping });
+  const { fetchLayer } = memoryFetcher({ cidLoop: looping });
   const tip = layer({ version: "v3", chains: {}, previousCid: "cidLoop" });
 
-  const result = await collectRegistryChain(tip, { fetchLayer: ipfsFetcher(fetchImpl) });
+  const result = await collectRegistryChain(tip, { fetchLayer });
 
   assert.equal(result.complete, false);
   assert.match(result.reason, /cycle detected/);
@@ -202,13 +217,10 @@ test("collectRegistryChain stops at maxDepth rather than walking indefinitely", 
   for (let i = 0; i < 10; i++) {
     documents[`cid${i}`] = layer({ version: `v${i}`, chains: {}, previousCid: `cid${i + 1}` });
   }
-  const { fetchImpl } = fakeFetch(documents);
+  const { fetchLayer } = memoryFetcher(documents);
   const tip = layer({ version: "tip", chains: {}, previousCid: "cid0" });
 
-  const result = await collectRegistryChain(tip, {
-    maxDepth: 3,
-    fetchLayer: ipfsFetcher(fetchImpl),
-  });
+  const result = await collectRegistryChain(tip, { maxDepth: 3, fetchLayer });
 
   assert.equal(result.complete, false);
   assert.match(result.reason, /longer than maxDepth 3/);
@@ -221,33 +233,14 @@ test("collectRegistryChain completes when the base snapshot is the maxDepth'th l
   // layers is fetched in full, the base is in hand, and the walk still reports "chain longer
   // than maxDepth" — which would make setting the bound to the observed chain length fail.
   const base = layer({ version: "v1", chains: { 1: chain({ hub: "0xhub" }) } });
-  const { fetchImpl } = fakeFetch({ cidBase: base });
+  const { fetchLayer } = memoryFetcher({ cidBase: base });
   const tip = layer({ version: "v2", chains: {}, previousCid: "cidBase" });
 
-  const result = await collectRegistryChain(tip, {
-    maxDepth: 2,
-    fetchLayer: ipfsFetcher(fetchImpl),
-  });
+  const result = await collectRegistryChain(tip, { maxDepth: 2, fetchLayer });
 
   assert.equal(result.complete, true);
   assert.equal(result.reason, null);
   assert.equal(result.layers.length, 2);
-});
-
-test("collectRegistryChain survives a failing gateway by falling through to the next", async () => {
-  const base = layer({ version: "v1", chains: { 1: chain({ hub: "0xhub" }) } });
-  const { fetchImpl, calls } = fakeFetch({ cidBase: base }, { failGateways: ["centrifuge-files"] });
-  const tip = layer({ version: "v2", chains: {}, previousCid: "cidBase" });
-
-  const result = await collectRegistryChain(tip, { fetchLayer: ipfsFetcher(fetchImpl) });
-
-  assert.equal(result.complete, true);
-  assert.equal(result.layers.length, 2);
-  assert.ok(
-    calls.some((url) => url.includes("centrifuge-files")),
-    "first gateway was tried",
-  );
-  assert.ok(calls.length > 1, "fell through to a second gateway");
 });
 
 test("collectRegistryChain returns the accumulated state alongside the layers", async () => {
@@ -257,14 +250,14 @@ test("collectRegistryChain returns the accumulated state alongside the layers", 
     version: "v1",
     chains: { 1: chain({ hub: "0xold", guardian: "0xguardian" }) },
   });
-  const { fetchImpl } = fakeFetch({ cidBase: base });
+  const { fetchLayer } = memoryFetcher({ cidBase: base });
   const tip = layer({
     version: "v2",
     chains: { 1: chain({ hub: "0xnew", guardian: contract(null) }) },
     previousCid: "cidBase",
   });
 
-  const result = await collectRegistryChain(tip, { fetchLayer: ipfsFetcher(fetchImpl) });
+  const result = await collectRegistryChain(tip, { fetchLayer });
 
   assert.deepEqual(result.accumulated, flattenRegistryChain(result.layers));
   assert.equal(result.accumulated["1"].contracts.hub.address, "0xnew");
@@ -298,17 +291,14 @@ test("collectRegistryChain refuses a mid-chain layer from the wrong network", as
     network: "testnet",
     chains: { 1: chain({ hub: "0xforeign" }) },
   });
-  const { fetchImpl } = fakeFetch({ cidBase: foreign });
+  const { fetchLayer } = memoryFetcher({ cidBase: foreign });
   const tip = layer({
     version: "v2",
     chains: { 1: chain({ vault: "0xvault" }) },
     previousCid: "cidBase",
   });
 
-  const result = await collectRegistryChain(tip, {
-    expectedNetwork: "mainnet",
-    fetchLayer: ipfsFetcher(fetchImpl),
-  });
+  const result = await collectRegistryChain(tip, { expectedNetwork: "mainnet", fetchLayer });
 
   assert.equal(result.complete, false);
   assert.match(result.reason, /declares network "testnet"/);
@@ -332,7 +322,7 @@ for (const [name, build] of UNDECLARED_NETWORK) {
 
     const result = await collectRegistryChain(tip, {
       expectedNetwork: "mainnet",
-      fetchLayer: ipfsFetcher(fakeFetch(cidMap).fetchImpl),
+      fetchLayer: memoryFetcher(cidMap).fetchLayer,
     });
 
     assert.match(result.reason, /declares no network.*"mainnet" is being generated/);
@@ -345,10 +335,10 @@ for (const [name, build] of UNDECLARED_NETWORK) {
 
 test("collectRegistryChain accepts layers without a network when none is expected", async () => {
   const base = layer({ version: "v1", network: null, chains: { 1: chain({ hub: "0xhub" }) } });
-  const { fetchImpl } = fakeFetch({ cidBase: base });
+  const { fetchLayer } = memoryFetcher({ cidBase: base });
   const tip = layer({ version: "v2", network: null, chains: {}, previousCid: "cidBase" });
 
-  const result = await collectRegistryChain(tip, { fetchLayer: ipfsFetcher(fetchImpl) });
+  const result = await collectRegistryChain(tip, { fetchLayer });
 
   assert.equal(result.complete, true);
   assert.equal(result.reason, null);
@@ -385,7 +375,7 @@ test("collectRegistryChain returns ABI coverage alongside the accumulated state"
     abis: { Hub: [] },
     previousRegistry: null,
   };
-  const { fetchImpl } = fakeFetch({ cidBase: base });
+  const { fetchLayer } = memoryFetcher({ cidBase: base });
   const tip = {
     network: "mainnet",
     version: "v2",
@@ -394,7 +384,7 @@ test("collectRegistryChain returns ABI coverage alongside the accumulated state"
     previousRegistry: { version: "v1", ipfsHash: "cidBase" },
   };
 
-  const result = await collectRegistryChain(tip, { fetchLayer: ipfsFetcher(fetchImpl) });
+  const result = await collectRegistryChain(tip, { fetchLayer });
 
   assert.deepEqual([...result.accumulatedAbis].sort(), ["Hub", "Spoke"]);
 });
@@ -438,27 +428,19 @@ function realFetcher({ tampered = null } = {}) {
   const fetchLayer = async (cid) => {
     fetched.push(cid);
     if (!known.has(cid)) throw new Error(`could not fetch ${cid}`);
-    const bytes = new Uint8Array(realLayerBytes(cid));
-    if (cid === tampered) bytes[10] ^= 0x01;
-    return layerFromBytes(cid, bytes);
+    const bytes = realLayerBytes(cid);
+    return layerFromBytes(cid, cid === tampered ? flipByte(bytes, 10) : bytes);
   };
   return { fetchLayer, fetched };
 }
 
 /** A fetchLayer over a complete synthetic chain, cidTip -> cidMid -> cidBase, recording what it fetched. */
 function syntheticFetcher() {
-  const layers = {
+  return memoryFetcher({
     cidTip: layer({ previousCid: "cidMid" }),
     cidMid: layer({ previousCid: "cidBase" }),
     cidBase: layer({}),
-  };
-  const fetched = [];
-  const fetchLayer = async (cid) => {
-    fetched.push(cid);
-    if (!layers[cid]) throw new Error(`could not fetch ${cid}`);
-    return structuredClone(layers[cid]);
-  };
-  return { fetchLayer, fetched };
+  });
 }
 
 test("collectRegistryChain with stopAt stops before fetching the layer it names, keeping the layers above", async () => {

@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 
 import { envTreeOf } from "../src/core/env.ts";
 import { generateRegistry, RefusedError } from "../src/core/generate.ts";
-import { layer } from "./helpers.js";
+import { layerFromBytes } from "../src/core/verify.ts";
+import {
+  MAINNET_HEAD,
+  MAINNET_HEAD_PARENT,
+  fakeFetch,
+  flipByte,
+  ipfsFetcher,
+  layer,
+  realLayerBytes,
+} from "./helpers.js";
 
 const NAMESPACE = "0x926702C7f1af679a8f99A40af8917DDd82fD6F6c";
 const HUB = "0x0000000000000000000000000000000000000001";
@@ -64,6 +73,32 @@ test("a contract env records without a block number refuses generation", async (
     ),
     (error) =>
       error instanceof RefusedError && /spoke has no numeric blockNumber/.test(error.message),
+  );
+});
+
+test("a layer no gateway serves matching bytes for refuses generation, even with allowPartialChain", async () => {
+  // Every gateway serves the tip's parent tampered. Stopping above it would measure the delta
+  // against part of the chain; trusting it, against state nobody published.
+  const { fetchImpl } = fakeFetch({
+    [MAINNET_HEAD_PARENT]: flipByte(realLayerBytes(MAINNET_HEAD_PARENT), 10),
+  });
+  const tip = await layerFromBytes(MAINNET_HEAD, realLayerBytes(MAINNET_HEAD));
+
+  await assert.rejects(
+    generateRegistry(
+      {
+        network: "mainnet",
+        env: envOf({ hub: { address: HUB, blockNumber: 100, version: "v3.3.0" } }),
+        tip: { cid: MAINNET_HEAD, layer: tip },
+        fetchLayer: ipfsFetcher(fetchImpl),
+        allowPartialChain: true,
+      },
+      deps,
+    ),
+    (error) =>
+      error instanceof RefusedError &&
+      !error.retryable &&
+      /failed verification: no gateway served matching bytes/.test(error.message),
   );
 });
 

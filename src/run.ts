@@ -96,9 +96,12 @@ function cachedTagExists(config: RunConfig): (tag: string) => Promise<boolean> {
 
 function r2LayerCache(bucket: R2Bucket): LayerCache {
   return {
-    get: async (cid) => (await bucket.get(`layers/${cid}.json`))?.text() ?? null,
-    put: async (cid, text) => {
-      await bucket.put(`layers/${cid}.json`, text);
+    get: async (cid) => {
+      const object = await bucket.get(`layers/${cid}.json`);
+      return object ? new Uint8Array(await object.arrayBuffer()) : null;
+    },
+    put: async (cid, bytes) => {
+      await bucket.put(`layers/${cid}.json`, bytes);
     },
   };
 }
