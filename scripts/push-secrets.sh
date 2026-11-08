@@ -5,9 +5,8 @@
 #
 #   NODE_SHIMS_MODE=local scripts/push-secrets.sh [--environment <ID>] [<wrangler args>]
 #
-# The ID defaults to the "protocol-registry Worker" Environment's; --environment or
-# REGISTRY_OP_ENVIRONMENT names another. The 1Password app shows it under Developer > View
-# Environments > Manage environment > Copy environment ID.
+# The Environment's ID comes from --environment or REGISTRY_OP_ENVIRONMENT. The 1Password app shows
+# it under Developer > View Environments > Manage environment > Copy environment ID.
 #
 # Which secrets go up follows PUBLISH_MODE in wrangler.jsonc, so the Worker holds no publishing
 # credential before its stage needs it:
@@ -15,8 +14,8 @@
 #   shadow  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET, SLACK_WEBHOOK_URL,
 #           MANUAL_TRIGGER_TOKEN
 #   pin     the above and PINATA_JWT
-#   live    the above and CLOUDFLARE_API_TOKEN, read from the ops-v3 item .env.1password references
-#           (ops-v3's token reconciler rotates it there)
+#   live    the above and CLOUDFLARE_API_TOKEN, read from the 1Password item .env.1password
+#           references (the infrastructure repository rotates it there)
 #
 # A secret already uploaded stays when the mode goes back down: remove it with `wrangler secret delete`.
 # Extra arguments go to wrangler. Re-run after rotating any of them.
@@ -26,10 +25,16 @@ set +x
 
 cd "$(dirname "$0")/.."
 
-environment=${REGISTRY_OP_ENVIRONMENT:-weyggnasjjxhanfpqpxfpsl6za}
+environment=${REGISTRY_OP_ENVIRONMENT:-}
 if [ "${1:-}" = "--environment" ]; then
   environment=${2:?--environment needs an Environment ID}
   shift 2
+fi
+if [ -z "$environment" ]; then
+  echo "error: set REGISTRY_OP_ENVIRONMENT or pass --environment <ID>, the ID of the" \
+    "\"protocol-registry Worker\" 1Password Environment (1Password app: Developer >" \
+    "View Environments > Manage environment > Copy environment ID)" >&2
+  exit 1
 fi
 
 for command in op jq pnpm; do

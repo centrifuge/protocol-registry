@@ -96,7 +96,7 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
         return { sha, outcomes: [], envProblems, published: [], shadow: [] };
       }
 
-      // protocol-internal builds a tag's ABIs when the tag is pushed, in a few minutes; this waits
+      // protocol builds a tag's ABIs when the tag is pushed, in a few minutes; this waits
       // out a build in flight, and names the tag when there is none
       await step.do(
         "ensure ABIs",
@@ -105,7 +105,7 @@ export class RegistryRun extends WorkflowEntrypoint<Env, RunParams> {
           const missing = await missingAbis(config, await loadEnv(config, sha));
           if (missing.length > 0) {
             throw new Error(
-              `no ABI bundle for ${missing.join(", ")}: protocol-internal's build-abis.yml builds a ` +
+              `no ABI bundle for ${missing.join(", ")}: protocol's build-abis.yml builds a ` +
                 `tag when it is pushed; run it by hand for a tag pushed before it existed`,
             );
           }

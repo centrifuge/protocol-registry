@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # The environment allows deployments from main only. It holds CLOUDFLARE_DEPLOY_API_TOKEN, which
-    # ops-v3's token reconciler manages ("protocol-registry - Deploy Workers (production)").
+    # the infrastructure repository manages.
     environment: production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

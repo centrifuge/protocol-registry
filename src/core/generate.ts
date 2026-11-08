@@ -73,7 +73,7 @@ export interface Logger {
 
 export interface GenerateDeps {
   log: Logger;
-  /** Whether protocol-internal has this tag. */
+  /** Whether protocol has this tag. */
   tagExists(tag: string): Promise<boolean>;
   /** An artifact's ABI as built at a tag, or null when that build has no such artifact. */
   abiAt(tag: string, artifactName: string): Promise<unknown[] | null>;

@@ -2,7 +2,7 @@
   "name": "@centrifuge/protocol-registry",
   "version": "0.0.0",
   "private": true,
-  "description": "Generates and publishes the Centrifuge contract registry from protocol-internal env configs",
+  "description": "Generates and publishes the Centrifuge contract registry from protocol env configs",
   "type": "module",
   "packageManager": "pnpm@10.19.0",
   "engines": {
