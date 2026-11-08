@@ -5,6 +5,7 @@ import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
+import { manualParams } from "../src/manual-run.ts";
 import { hostnameReport, publishCheck, publishLines, toPublish } from "../src/report.ts";
 import {
   checkHostname,
@@ -14,6 +15,7 @@ import {
   TipMovedError,
 } from "../src/run.ts";
 import { route, touchesRegistryInputs } from "../src/webhook.ts";
+import { MAINNET_HEAD } from "./helpers.js";
 
 const config = { sourceRepo: "centrifuge/protocol-internal", sourceBranch: "live-v3.3" };
 const repository = { full_name: config.sourceRepo };
@@ -469,4 +471,47 @@ test("a manual publish neither hides the push's check nor marks the release bran
   ]) {
     assert.deepEqual(publishCheck(reason, refused), expected);
   }
+});
+
+test("POST /runs refuses what a run would refuse, and what a run could not tell", () => {
+  const cid = MAINNET_HEAD;
+  for (const [body, accepted] of [
+    [{ kind: "preview" }, true],
+    [{ kind: "deploy" }, false],
+    [{ kind: "publish", networks: ["devnet"] }, false],
+    [{ kind: "publish", mode: "snapshot" }, false],
+    [{ kind: "publish", mode: "full" }, false], // both networks, so mainnet
+    [{ kind: "publish", mode: "full", networks: ["mainnet"] }, false],
+    [{ kind: "publish", mode: "full", networks: ["testnet"] }, true],
+    [{ kind: "preview", sourceCid: cid }, false], // needs the one network to build on it
+    [{ kind: "preview", sourceCid: cid, networks: ["mainnet", "testnet"] }, false],
+    [{ kind: "preview", sourceCid: "not-a-cid", networks: ["mainnet"] }, false],
+    [{ kind: "preview", sourceCid: cid, networks: ["mainnet"] }, true],
+    [{ kind: "preview", sha: "abc123" }, true],
+    [{ kind: "publish", sha: "abc123" }, false],
+    [{ kind: "publish", acceptLiveCid: cid, networks: ["mainnet"] }, true],
+    [{ kind: "publish", acceptLiveCid: cid }, false],
+    [{ kind: "preview", acceptLiveCid: cid, networks: ["mainnet"] }, false],
+  ]) {
+    const result = manualParams(body);
+    assert.equal(typeof result === "object", accepted, `${JSON.stringify(body)}: ${result}`);
+  }
+
+  // What a run receives: only what the body set, and a false flag is not a flag
+  assert.deepEqual(
+    manualParams({
+      kind: "publish",
+      networks: ["testnet"],
+      mode: "full",
+      allowHistoryDrop: true,
+      allowPartialChain: false,
+    }),
+    {
+      kind: "publish",
+      reason: "manual",
+      networks: ["testnet"],
+      mode: "full",
+      allowHistoryDrop: true,
+    },
+  );
 });
