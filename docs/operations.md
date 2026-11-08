@@ -15,16 +15,18 @@ section describes the setup: the App, the secrets and the deploys.
 - [Auditing the published chain](#auditing-the-published-chain)
 - [Checking the publishing credentials](#checking-the-publishing-credentials)
 - [The layer cache](#the-layer-cache)
-- [From protocol-internal's scripts](#from-protocol-internals-scripts)
+- [From protocol's scripts](#from-protocols-scripts)
 
 ## Previews and publishes
 
 The usual case needs no action:
 
-- A pull request into protocol-internal's [release branch][pi-branch] that touches [`env/`][pi-env]
+- A pull request into protocol's [release branch][pi-branch] that touches [`env/`][pi-env]
   gets a **Registry preview** check run. The check run shows the layer that each network would get, its retirements, and
   every finding. "Re-run" on the check runs it again.
-- A merge of that pull request publishes, as far as `PUBLISH_MODE` allows. Slack says what happened.
+- A merge of that pull request publishes, as far as `PUBLISH_MODE` allows. Slack says what happened,
+  in one line for each network, with a link to the **Registry publish** check run on the commit. The
+  check run holds the full report.
 - The cron also starts a publish run every six hours. So the Worker retries a dropped webhook or a
   failed run.
 
@@ -36,18 +38,19 @@ change, the layer compares against the wrong baseline.
 
 `POST /runs` and `GET /status` take the bearer token `MANUAL_TRIGGER_TOKEN`, from the
 "protocol-registry Worker" 1Password Environment. `op run` gives the token to the command, and the
-token never reaches the terminal:
+token never reaches the terminal. `REGISTRY_OP_ENVIRONMENT` holds the ID of that Environment, as for
+`scripts/push-secrets.sh`. `<host>` is the URL of the Worker (see the README's Setup section):
 
 ```bash
-H=https://centrifuge-protocol-registry.centrifuge-kf.workers.dev
-op run --environment weyggnasjjxhanfpqpxfpsl6za -- sh -c \
+H=https://<host>
+op run --environment "$REGISTRY_OP_ENVIRONMENT" -- sh -c \
   "curl -sX POST $H/runs -H \"Authorization: Bearer \$MANUAL_TRIGGER_TOKEN\" -d '{\"kind\":\"preview\"}'"
 ```
 
 | Field               | Meaning                                                                                                                                             |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `kind`              | `preview` (generate and validate, publish nothing) or `publish` (through the Publisher, as far as `PUBLISH_MODE` allows)                            |
-| `sha`               | Preview only: the protocol-internal commit to generate from. A publish run always uses the head of the release branch.                              |
+| `sha`               | Preview only: the protocol commit to generate from. A publish run always uses the head of the release branch.                                       |
 | `networks`          | `["mainnet"]`, `["testnet"]` or both (the default)                                                                                                  |
 | `mode`              | `auto` (default), `delta`, `patch` or `full` (see [Modes](registry-format.md#modes))                                                                |
 | `sourceCid`         | Build on this CID instead of the live layer. Needs exactly one network. Use it to generate a broken layer again, or to test against an older layer. |
@@ -83,6 +86,8 @@ example in a switch to another deployment.
 
 `POST /runs` answers with the run id. Then:
 
+- The Slack message of a manual publish links to its **Registry publish (manual)** check run on the
+  protocol commit. The check run holds the full report, and reading it needs no token.
 - `GET /runs/<id>` gives the status and report of the run. `GET /runs/<id>/registry-<network>.json`
   and `.validation.json` give its layers and validation reports. R2 holds the same files under
   `runs/<id>/`.
@@ -100,16 +105,11 @@ tag (see [ABIs](#abis)).
 
 ## Changing `PUBLISH_MODE`
 
-The mode is in `wrangler.jsonc`, so a pull request changes it. To move the mode up:
-
-1. Merge the change to `wrangler.jsonc`.
-2. Run `NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod`. The script reads the
-   mode and uploads the credentials it needs: `PINATA_JWT` for `pin`, and also
-   `CLOUDFLARE_API_TOKEN` for `live`.
-3. From `main`, run `NODE_SHIMS_MODE=local scripts/deploy.sh --profile centrifuge-prod`.
-
-Upload the secrets before the deploy, so the Worker holds a credential before its mode uses it. A mode
-whose credentials are missing fails every publish run.
+The mode is in `wrangler.jsonc`, so a pull request changes it. The merge deploys the Worker with the
+new mode. A mode needs its credentials: `PINATA_JWT` for `pin`, and also `CLOUDFLARE_API_TOKEN` for
+`live`. A mode whose credentials are missing fails every publish run. If the Worker does not hold one
+of them, run `NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod` from the pull
+request's branch before you merge.
 
 When you move the mode down, the uploaded credentials stay on the Worker. Remove one with
 `wrangler secret delete`. If the mode change must act on a publish right away, start a manual
@@ -118,12 +118,13 @@ When you move the mode down, the uploaded credentials stay on the Worker. Remove
 ## Pointing a hostname back
 
 If a published layer is wrong, point the hostname at the previous CID. That CID is the
-`previousRegistry.ipfsHash` of the new layer. Use the Cloudflare dashboard (Web3, the DNSLink of the
-hostname), or use the same token as the Worker:
+`previousRegistry.ipfsHash` of the new layer. Change the DNSLink of the hostname in the dashboard of
+the Web3 gateway, or use the same token as the Worker. `<zone-id>` is `CLOUDFLARE_ZONE_ID` in
+`wrangler.jsonc`:
 
 ```bash
 op run --env-file .env.1password -- sh -c 'curl -sX PATCH \
-  "https://api.cloudflare.com/client/v4/zones/b9a43e7d34e470e7ee9b1f41a34cc726/web3/hostnames/<hostname-id>" \
+  "https://api.cloudflare.com/client/v4/zones/<zone-id>/web3/hostnames/<hostname-id>" \
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
   -d "{\"dnslink\":\"/ipfs/<previous-cid>\"}"'
 ```
@@ -134,7 +135,7 @@ hostname ids.
 
 ## ABIs
 
-protocol-internal's [`.github/workflows/build-abis.yml`][pi-build-abis] builds each release tag once,
+protocol's [`.github/workflows/build-abis.yml`][pi-build-abis] builds each release tag once,
 into R2:
 
 ```
@@ -146,7 +147,7 @@ A manifest means that the bundle is complete. A run uses a bundle only when its 
 that the tag points at now. The Worker refuses a tag that moved after its build, until someone builds
 the tag again.
 
-- **When it runs:** on every `v*` tag that someone pushes to protocol-internal. GitHub starts no run for
+- **When it runs:** on every `v*` tag that someone pushes to protocol. GitHub starts no run for
   a tag pushed with `GITHUB_TOKEN`, or for any tag in a push of more than three. A registry run that
   needs such a tag waits up to an hour, then fails and names the tag.
 - **By hand:** dispatch it for those tags, for tags pushed before the workflow existed, and to build a
@@ -167,7 +168,7 @@ the tag again.
 
 ## Generating locally
 
-You need a protocol-internal checkout (for its `env/` and tags) and wrangler access to the bucket:
+You need a protocol checkout (for its `env/` and tags) and wrangler access to the bucket:
 
 ```bash
 NODE_SHIMS_MODE=local node scripts/generate.ts mainnet --source-repo ../protocol-internal \
@@ -177,7 +178,7 @@ NODE_SHIMS_MODE=local node scripts/generate.ts mainnet --source-repo ../protocol
 
 The script does these steps:
 
-1. It reads `env/` from the working tree of the protocol-internal checkout, and the tags from its git.
+1. It reads `env/` from the working tree of the protocol checkout, and the tags from its git.
 2. It fetches the ABI bundles it needs from R2 into `cache/abis/<tag>/`.
 3. It walks the live chain, with a cache in `cache/registry-chain/`.
 4. It writes `out/registry-<network>.json` and the validation report of the layer.
@@ -223,14 +224,14 @@ every layer against its CID.
 These read-only calls prove that the credentials work. They pin nothing and change no hostname:
 
 ```bash
-op run --environment weyggnasjjxhanfpqpxfpsl6za --env-file .env.1password -- sh -c '
+op run --environment "$REGISTRY_OP_ENVIRONMENT" --env-file .env.1password -- sh -c '
   curl -s https://api.pinata.cloud/data/testAuthentication -H "Authorization: Bearer $PINATA_JWT"
-  curl -s https://api.cloudflare.com/client/v4/zones/b9a43e7d34e470e7ee9b1f41a34cc726/web3/hostnames \
+  curl -s https://api.cloudflare.com/client/v4/zones/<zone-id>/web3/hostnames \
     -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" | jq ".result[] | {id, name, status, dnslink}"'
 ```
 
-Pinata answers "Congratulations! You are communicating with the Pinata API!". Cloudflare lists both
-registry hostnames, with their ids and the CIDs they serve. The calls do not test a write, because a
+Pinata answers "Congratulations! You are communicating with the Pinata API!". The second call lists
+both registry hostnames, with their ids and the CIDs they serve. The calls do not test a write, because a
 write would change what a hostname serves.
 
 ## The layer cache
@@ -240,15 +241,15 @@ The contents of a CID never change, so the Worker caches every fetched layer by 
 fetch the layers again. With the cache, a walk costs one fetch per layer published since the last run.
 An entry holds the bytes that a gateway served. Each read checks them against the CID, so a damaged
 entry is a miss, and the next fetch overwrites it.
-The Worker also caches protocol-internal's `env/` by commit, at `snapshots/<sha>.json` in R2.
+The Worker also caches protocol's `env/` by commit, at `snapshots/<sha>.json` in R2.
 
-## From protocol-internal's scripts
+## From protocol's scripts
 
-| protocol-internal ([`script/registry/`][pi-script-registry])                                                                  | Here                                                                                                                                                |
+| protocol ([`script/registry/`][pi-script-registry])                                                                           | Here                                                                                                                                                |
 | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`registry.yml`][pi-registry-yml] on pull requests: the Registry Preview comment                                              | the **Registry preview** check run on the PR                                                                                                        |
 | [`registry.yml`][pi-registry-yml] on push: [`pin-to-ipfs.js`][pi-pin-to-ipfs], [`update-cloudflare.js`][pi-update-cloudflare] | a publish run, as far as `PUBLISH_MODE` allows                                                                                                      |
-| [`registry-publish.yml`][pi-registry-publish-yml] dispatch on protocol-internal's `main`                                      | `POST /runs` with `{"kind":"publish"}`                                                                                                              |
+| [`registry-publish.yml`][pi-registry-publish-yml] dispatch on protocol's `main`                                               | `POST /runs` with `{"kind":"publish"}`                                                                                                              |
 | [`node script/registry/abi-registry.js <network>`][pi-abi-registry]                                                           | `node scripts/generate.ts <network> --source-repo <checkout>`                                                                                       |
 | `REGISTRY_MODE=delta \| patch \| full`, `--full`                                                                              | `mode` / `--mode`                                                                                                                                   |
 | `SOURCE_IPFS=<cid>`                                                                                                           | `sourceCid` / `--source-cid`                                                                                                                        |
@@ -257,14 +258,14 @@ The Worker also caches protocol-internal's `env/` by commit, at `snapshots/<sha>
 | `REGISTRY_CHAIN_MAX_DEPTH`                                                                                                    | none: the walk stops at 500 layers                                                                                                                  |
 | `REGISTRY_CHAIN_CACHE_DIR`, `REGISTRY_CHAIN_NO_CACHE=1`                                                                       | none: delete `cache/registry-chain/` to fetch the layers again                                                                                      |
 | `SKIP_LIVE_REGISTRY_CHECK=1`                                                                                                  | none: every check runs, every time                                                                                                                  |
-| [`build-abi-cache.js`][pi-build-abi-cache], `cache/abi-registry/<tag>/out/`                                                   | protocol-internal's [`build-abis.yml`][pi-build-abis] into R2 `abis/<tag>/`. Locally, `cache/abis/<tag>/`.                                          |
+| [`build-abi-cache.js`][pi-build-abi-cache], `cache/abi-registry/<tag>/out/`                                                   | protocol's [`build-abis.yml`][pi-build-abis] into R2 `abis/<tag>/`. Locally, `cache/abis/<tag>/`.                                                   |
 | [`validate-env-schema.js`][pi-validate-env-schema], [`validate-env-contract-version-tags.js`][pi-validate-version-tags]       | the "check env" step of a run: a preview with `sha`                                                                                                 |
 | [`validate-registry.js`][pi-validate-registry]                                                                                | every run validates. The reports are at `runs/<id>/registry-<network>.validation.json`.                                                             |
 | [`walk-registry-chain.js`][pi-walk-chain]                                                                                     | [Auditing the published chain](#auditing-the-published-chain)                                                                                       |
 | [`validate-api-keys.js`][pi-validate-api-keys]                                                                                | [Checking the publishing credentials](#checking-the-publishing-credentials)                                                                         |
 | [`detect-changed-environments.js`][pi-detect-changed]                                                                         | the Worker previews a PR, or publishes a push, that touches `env/`. Generation is per network. A network with nothing to publish publishes nothing. |
 
-<!-- protocol-internal links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol-internal removes. -->
+<!-- protocol links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol removes. -->
 
 [pi-env]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env
 [pi-branch]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3

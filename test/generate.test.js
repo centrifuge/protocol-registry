@@ -102,8 +102,8 @@ test("a layer no gateway serves matching bytes for refuses generation, even with
   );
 });
 
-// Layers written since protocol-internal#430 carry no deploymentInfo, so a null-version patch tip
-// names no version at all
+// Layers written since configs stopped recording deployment metadata carry no deploymentInfo, so a
+// null-version patch tip names no version at all
 function withoutDeploymentInfo(doc) {
   delete doc.deploymentInfo;
   return doc;

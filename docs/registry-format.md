@@ -1,7 +1,7 @@
 # The registry format
 
 This file describes what a published layer contains, how the Worker computes a layer from
-protocol-internal's [`env/`][pi-env], and every rule that a layer must pass. The code is in `src/core/`.
+protocol's [`env/`][pi-env], and every rule that a layer must pass. The code is in `src/core/`.
 [how-it-works.md](how-it-works.md) describes the flow around it.
 
 - [Layers and the chain](#layers-and-the-chain)
@@ -52,7 +52,7 @@ not match counts as a miss, and the next fetch overwrites it.
 The Worker computes a layer against the **accumulated state of the whole published chain**. The
 generator walks `previousRegistry.ipfsHash` from the live layer back to the base snapshot. It merges
 every layer, newest winning, to rebuild the state that an indexer holds. Only then does it compare
-protocol-internal's `env/` against that state.
+protocol's `env/` against that state.
 
 A comparison against the newest layer alone would be wrong. Each layer carries only its own changes, so
 everything that the newest layer does not carry would read as new. A small deploy would then emit a
@@ -93,7 +93,7 @@ To force a mode, give a manual run a `mode`:
 - `full` makes a snapshot.
 
 The **env's version** is the highest contract `version` that a config of the network records in
-protocol-internal's `env/`. So a
+protocol's `env/`. So a
 layer built from configs that record only an older contract (`root`, for example) carries the version
 of that contract. The Worker does not publish a layer that changes nothing, whatever its version says.
 
@@ -109,11 +109,11 @@ A **full snapshot** starts the chain again, so an indexer that rebuilds from it 
 layers. For this reason, full mode still reads the published chain:
 
 - It refuses a snapshot that would drop a published contract that is live and unretired (one that
-  protocol-internal's `env/` no longer lists). The refusal names those contracts.
+  protocol's `env/` no longer lists). The refusal names those contracts.
 - It keeps every published retirement in the snapshot.
 
 `allowHistoryDrop` overrides the refusal for the one case where the drop is the purpose. That case is
-a switch of protocol-internal's [`env/registry.json`][pi-registry-json] to another deployment, which changes every address
+a switch of protocol's [`env/registry.json`][pi-registry-json] to another deployment, which changes every address
 in the registry. A snapshot made while no layer is reachable carries no history, and says so. While a
 registry is live, only a testnet snapshot passes the orphan rule (see
 [Indexer hard requirements](#indexer-hard-requirements)).
@@ -122,7 +122,7 @@ The report of the run and the `summary.mode` of the validation report give the c
 
 ## What counts as a change
 
-A contract in protocol-internal's `env/` is part of the layer when the accumulated state does not
+A contract in protocol's `env/` is part of the layer when the accumulated state does not
 already hold it as written. That is, when:
 
 - it is new on that chain, or its address is different.
@@ -137,7 +137,7 @@ erase the published number.
 
 ## A contract missing from env is kept
 
-A contract that is live in the accumulated state but absent from protocol-internal's `env/` stays
+A contract that is live in the accumulated state but absent from protocol's `env/` stays
 **kept**, exactly as published:
 
 - the generator lists it.
@@ -149,7 +149,7 @@ release drops every contract it did not deploy again. A cleanup can drop a key. 
 the contract is in use.
 
 A retirement by absence once retired the v3.1 on/off-ramp factory while 93 managers still used it
-([protocol-internal#407][pi-407]). It also once published a layer that retired the whole protocol, from configs
+([pull request #407][pi-407]). It also once published a layer that retired the whole protocol, from configs
 that recorded only `root`. So retirement is a declaration.
 
 ## Retirement
@@ -159,7 +159,7 @@ migrated from it, or one contract that is confirmed out of use. This is a decisi
 release, made after the fact. So someone writes it down, and the Worker does not infer it. The
 declaration sits beside the configs, not in one, because a deploy run writes a config again in full.
 
-The file is protocol-internal's [`env/<environment>/retired.json`][pi-env]. Its keys are network names, which
+The file is protocol's [`env/<environment>/retired.json`][pi-env]. Its keys are network names, which
 resolve through the configs in the same directory. A key that matches no `<network>.json` there is an
 error, never a skip. The schema check refuses a `retired` key inside a config.
 
@@ -231,7 +231,7 @@ published layers, and still shadow. They carry no ABI. Nothing writes new ones.
 
 ## Versions, tags and ABIs
 
-Each contract in a config in protocol-internal's `env/` records a `version`. The version resolves to a [git tag][pi-tags] of protocol-internal
+Each contract in a config in protocol's `env/` records a `version`. The version resolves to a [git tag][pi-tags] of protocol
 (`3` → `v3`, `v3.1` → `v3.1.0`), and the ABI comes from the build of that tag. So a chain that mixes
 releases gets the right ABI for every contract. Every version must resolve to a tag that exists. The run
 waits for the ABI bundle of that tag (see [operations.md](operations.md#abis)).
@@ -241,14 +241,14 @@ waits for the ABI bundle of that tag (see [operations.md](operations.md#abis)).
 A testnet deployed on a release that is still open records `"version": "v3.3"` for a `v3.3` tag that
 does not exist yet. Once the tag exists, the testnet must not borrow it, because its contracts are the
 release candidate, not the release. The directory states which tag backs each version, in
-protocol-internal's [`env/<environment>/versions.json`][pi-env]:
+protocol's [`env/<environment>/versions.json`][pi-env]:
 
 ```json
 { "tags": { "v3.3": "v3.3.0-rc2" } }
 ```
 
 The file is per directory, because a directory is a deployment. The same `v3.3` means the release in
-protocol-internal's [`env/mainnet/`][pi-env-mainnet], and the candidate in a testnet directory that deployed before the release. An
+protocol's [`env/mainnet/`][pi-env-mainnet], and the candidate in a testnet directory that deployed before the release. An
 alias replaces the candidate list, and does not prepend to it. So the lookup never reaches a tag with
 the name of the version behind the alias. The file sits with the configs, so it stays valid after
 `env/registry.json` points elsewhere.
@@ -300,7 +300,7 @@ Nearly every contract counted as changed on every run, so its ABI shipped again.
 the accumulated state removed that accident. A gap would then stay forever, because nothing emits an
 unchanged contract again. Two mechanisms replace the accident:
 
-1. **Healing.** A run adds to the layer a contract that is active in protocol-internal's `env/` and
+1. **Healing.** A run adds to the layer a contract that is active in protocol's `env/` and
    whose required ABI names are in no layer's `abis`. It does so even when the address did not move. The
    summary counts these contracts separately.
 2. **Detection.** The ABI-coverage invariant gives an error if a live contract still has no ABI after
@@ -316,7 +316,7 @@ contracts need no ABI.
 earliest `blockNumber` among every active contract that the config of the chain records, not only the
 contracts in the layer. Generation derives it.
 
-Configs in protocol-internal's `env/` hold `network`, `adapters` and `contracts`, and nothing else.
+Configs in protocol's `env/` hold `network`, `adapters` and `contracts`, and nothing else.
 Every contract has an integer `blockNumber`. The schema check refuses any other top-level key, and a
 contract without a block. Generation also refuses a config with a contract that has no block. Published layers do not
 carry deploy-time fields (`network.environment`, `network.namespace`, per-contract `version`). Layers
@@ -372,15 +372,15 @@ Generation and publishing keep integers above 2^53 (the `chainSelector` of an ad
 `src/core/validate.ts` checks every layer against what indexers need. The rules apply to **active**
 contracts, which have a non-null `address`. Old tombstones skip the address, block and ABI rules.
 
-| Field                                           | Rule                                                                                                                                                                                                                                     |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`                                       | A non-empty string for delta and full layers. `null` for a patch, and only with `previousRegistry.ipfsHash` set.                                                                                                                         |
-| `previousRegistry.ipfsHash`                     | Set whenever a registry is live for the network, because a layer without it would be an orphan. Absent only for a base snapshot, which a live registry allows on testnet alone.                                                          |
-| `chains.<chainId>.deployment.startBlock`        | A number.                                                                                                                                                                                                                                |
-| `chains.<chainId>.contracts.<name>.address`     | A 20-byte address for every active contract.                                                                                                                                                                                             |
-| `chains.<chainId>.contracts.<name>.blockNumber` | A number for every active contract. A null block is a warning when the chain has a start block to use instead.                                                                                                                           |
-| `abis.<ArtifactName>`                           | Present for every active contract that the layer carries, and for the product of a factory, by the names in `src/core/abi-names.ts`.                                                                                                     |
-| `chains.<chainId>.retired.<address>`            | A lowercase address that some layer published live. A string `contract`. A positive integer `endBlock`, at or after `blockNumber` when present. An address that protocol-internal's `env/` lists, or a restated retirement, is an error. |
+| Field                                           | Rule                                                                                                                                                                                                                            |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                                       | A non-empty string for delta and full layers. `null` for a patch, and only with `previousRegistry.ipfsHash` set.                                                                                                                |
+| `previousRegistry.ipfsHash`                     | Set whenever a registry is live for the network, because a layer without it would be an orphan. Absent only for a base snapshot, which a live registry allows on testnet alone.                                                 |
+| `chains.<chainId>.deployment.startBlock`        | A number.                                                                                                                                                                                                                       |
+| `chains.<chainId>.contracts.<name>.address`     | A 20-byte address for every active contract.                                                                                                                                                                                    |
+| `chains.<chainId>.contracts.<name>.blockNumber` | A number for every active contract. A null block is a warning when the chain has a start block to use instead.                                                                                                                  |
+| `abis.<ArtifactName>`                           | Present for every active contract that the layer carries, and for the product of a factory, by the names in `src/core/abi-names.ts`.                                                                                            |
+| `chains.<chainId>.retired.<address>`            | A lowercase address that some layer published live. A string `contract`. A positive integer `endBlock`, at or after `blockNumber` when present. An address that protocol's `env/` lists, or a restated retirement, is an error. |
 
 `txHash`, `previousRegistry.version` and `adapters` are soft fields. Retired entries carry no ABI,
 because the layer that published the address carried it.
@@ -403,13 +403,13 @@ Structural validity is not enough. A layer that restates contracts already publi
 and a near-full snapshot once shipped as a delta three times that way. So `src/core/invariants.ts` also
 checks what a layer means, against the accumulated chain:
 
-| Invariant                                                                                                                     | Severity | Catches                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Projection**: the chain plus the layer gives every contract that protocol-internal's `env/` lists, at its address and block | error    | an omitted change, an invented address, a block that does not agree with `env/`. A published contract that `env/` no longer lists stays kept, and is reported, not warned about |
-| **Retirements**: each `retired` entry closes, once, a published address that `env/` does not list                             | error    | the end of a current contract, an address never published, a restated published retirement (a changed `endBlock` is a correction, and warns)                                    |
-| **Minimality**: no entry restates the published address and block                                                             | error    | a delta inflated toward a snapshot, or a tombstone again on a retired contract                                                                                                  |
-| **ABI coverage**: every live contract resolves to an ABI in the chain or the layer                                            | error    | a contract that no indexer can decode                                                                                                                                           |
-| **Size**: the layer carries more than 30% of published contracts                                                              | warning  | the symptom a person notices first. Expected for a release that deploys everything again                                                                                        |
+| Invariant                                                                                                            | Severity | Catches                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Projection**: the chain plus the layer gives every contract that protocol's `env/` lists, at its address and block | error    | an omitted change, an invented address, a block that does not agree with `env/`. A published contract that `env/` no longer lists stays kept, and is reported, not warned about |
+| **Retirements**: each `retired` entry closes, once, a published address that `env/` does not list                    | error    | the end of a current contract, an address never published, a restated published retirement (a changed `endBlock` is a correction, and warns)                                    |
+| **Minimality**: no entry restates the published address and block                                                    | error    | a delta inflated toward a snapshot, or a tombstone again on a retired contract                                                                                                  |
+| **ABI coverage**: every live contract resolves to an ABI in the chain or the layer                                   | error    | a contract that no indexer can decode                                                                                                                                           |
+| **Size**: the layer carries more than 30% of published contracts                                                     | warning  | the symptom a person notices first. Expected for a release that deploys everything again                                                                                        |
 
 The stats go into `summary.delta` of the validation report, and into the **Delta size** row of the
 preview. Full snapshots skip the invariants. When the run cannot rebuild the chain, the invariants warn
@@ -420,7 +420,7 @@ and do not fail, and generation refuses in that case anyway.
 ### A delta carrying old tombstones
 
 This is a shortened delta from the time when v3.1 removed some v3.0 contracts. Back then, the generator
-wrote `address: null` for a key missing from protocol-internal's `env/`. Such layers are part of the
+wrote `address: null` for a key missing from protocol's `env/`. Such layers are part of the
 published chains, so consumers still meet them. Only chains with changes appear under `chains`. `abis`
 lists only the ABIs that the layer needs:
 
@@ -500,7 +500,7 @@ This is how a release closes today. No contract changes. The layer carries only 
   the ones a CID names. So a consumer that pins a head can trust every layer under it (see the README's
   Package section).
 
-<!-- protocol-internal links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol-internal removes. -->
+<!-- protocol links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol removes. -->
 
 [pi-env]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env
 [pi-env-mainnet]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env/mainnet
