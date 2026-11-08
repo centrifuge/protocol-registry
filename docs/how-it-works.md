@@ -63,7 +63,9 @@ The blue boxes are in protocol. All other boxes are in the Worker.
 
 - `SOURCE_BRANCH` in `wrangler.jsonc` names the release branch. Today it is [`live-v3.3`][pi-branch].
 - Only a push or a pull request that changes `env/` starts a run. A pull request that changes nothing
-  under `env/` gets no check run. A draft pull request gets a preview too.
+  under `env/` gets no check run. A draft pull request gets a preview too. GitHub lists at most 20
+  commits in a push event. A push of more commits, whose only change to `env/` is in an older commit
+  than those 20, starts no run from the push. The cron publishes it within six hours.
 - The cron is a trigger of the Worker itself. It asks for a publish run every six hours, so a missed
   event or a failed run gets a retry.
 - A maintainer can also start a preview or a publish run with `POST /runs`. See
