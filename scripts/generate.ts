@@ -105,9 +105,6 @@ const cache = directoryCache(join("cache", "registry-chain"));
 const fetchLayer = async (cid: string) => slimLayer(await fetchRegistryFromIpfs(cid, { cache }));
 const live = await liveCid(HOSTNAMES[network]);
 const tipCid = values["source-cid"] ?? live;
-const tip = tipCid
-  ? { cid: tipCid, layer: await fetchRegistryFromIpfs(tipCid, { cache }).catch(() => null) }
-  : null;
 
 const abiAt = abiBundles({
   dir: join("cache", "abis"),
@@ -116,11 +113,16 @@ const abiAt = abiBundles({
 });
 
 try {
+  // A tip that cannot be read ends the run, as in the Worker: measured against nothing, a delta
+  // would re-emit every contract and a snapshot could not tell what it drops
+  const tip = tipCid
+    ? { cid: tipCid, layer: await fetchRegistryFromIpfs(tipCid, { cache }) }
+    : null;
   const generated = await generateRegistry(
     {
       network,
       env: envTreeFromDirectory(join(repo, "env")),
-      tip: tip?.layer ? { cid: tip.cid, layer: tip.layer } : null,
+      tip,
       fetchLayer,
       mode: values.mode as RegistryMode,
       allowPartialChain: values["allow-partial-chain"],
@@ -134,17 +136,19 @@ try {
     },
   );
 
-  // Validation measures against the live tip, which is not the source when a CID was given
-  const liveTip = live === tipCid ? tip?.layer : live ? await fetchLayer(live) : null;
+  // Validation measures against the live chain, which is not the source when a CID was given
   const liveChain =
     live === tipCid
       ? generated.chain
-      : liveTip
-        ? await collectRegistryChain(liveTip, { fetchLayer, expectedNetwork: network })
+      : live
+        ? await collectRegistryChain(await fetchLayer(live), {
+            fetchLayer,
+            expectedNetwork: network,
+          })
         : null;
   const report = validateRegistry({
     registry: generated.registry,
-    liveTip: liveTip ?? null,
+    liveCid: live,
     liveChain,
     envChains: generated.envChains,
     fullSnapshot: generated.summary.mode === "full",

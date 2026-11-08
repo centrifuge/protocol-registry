@@ -6,7 +6,11 @@
  *   - version: a non-empty string, **or** null for a patch layer (`previousRegistry.ipfsHash` set).
  *     api-v3 merges null-version patches into their predecessor, so the base still needs a version.
  *   - previousRegistry.ipfsHash: set whenever a live registry exists for the network, except in a
- *     testnet full snapshot the run asked for (a deliberate reset; mainnet is never reset this way)
+ *     testnet full snapshot the run asked for (a deliberate reset; mainnet is never reset this way),
+ *     and naming the live tip: a link below it orphans every layer above the link, and one outside
+ *     the live chain brings a chain nobody serves
+ *   - version: not below the newest version the live chain names, except in a full snapshot the run
+ *     asked for; a run generated from an older commit must not rewind the published version
  *   - chains.<id>.deployment.startBlock: a number (generation derives it as the earliest contract
  *     `blockNumber` the env config records)
  *   - chains.<id>.contracts.<name>.address: a 20-byte hex string for active contracts
@@ -26,6 +30,7 @@ import type { CollectedChain } from "./chain.ts";
 import { checkDeltaInvariants, type DeltaStats, type EnvChains } from "./invariants.ts";
 import { chainAddressHistory } from "./retirements.ts";
 import type { Finding, Layer } from "./types.ts";
+import { compareProtocolVersionStrings } from "./versions.ts";
 
 export interface ValidationSummary {
   mode: "full" | "delta" | "patch";
@@ -51,9 +56,12 @@ export interface ValidationReport {
 
 export interface ValidateInput {
   registry: Layer;
-  /** The live tip; null when none is published (or the check is skipped). */
-  liveTip: Layer | null;
-  /** The live tip's chain, for the delta invariants; null to skip them. */
+  /**
+   * The CID the network's hostname serves: a registry is live when it is set. Decided from the CID,
+   * not from a fetched document, so a tip that could not be read never passes as "nothing live".
+   */
+  liveCid: string | null;
+  /** The live tip's chain, for the link and delta checks; null when nothing is live. */
   liveChain: CollectedChain | null;
   /** The env this registry was generated from. */
   envChains: EnvChains;
@@ -61,15 +69,39 @@ export interface ValidateInput {
   fullSnapshot?: boolean;
 }
 
+/** The newest version the chain names; the tip may be a patch, which carries none. */
+function newestVersion(layers: Layer[]): string | null {
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const version = layers[i]?.version;
+    if (typeof version === "string" && version) return version;
+  }
+  return null;
+}
+
+/**
+ * How many layers the chain holds above the one `cid` names, or null when no link in the chain
+ * names it. The oldest held layer's link counts too: on a partial chain it names the layer the walk
+ * stopped at.
+ */
+function layersAbove(chain: CollectedChain, cid: string): number | null {
+  // layers[i]'s CID is layers[i + 1].previousRegistry.ipfsHash; see CollectedChain
+  for (let i = chain.layers.length - 1; i >= 0; i--) {
+    if (chain.layers[i]?.previousRegistry?.ipfsHash === cid) return chain.layers.length - i;
+  }
+  return null;
+}
+
 export function validateRegistry({
   registry,
-  liveTip,
+  liveCid,
   liveChain,
   envChains,
   fullSnapshot = false,
 }: ValidateInput): ValidationReport {
   const errors: Finding[] = [];
   const warnings: Finding[] = [];
+  const liveVersion = liveChain && !liveChain.fatal ? newestVersion(liveChain.layers) : null;
+  const live = liveVersion ? `version ${liveVersion}` : `CID ${liveCid}`;
 
   const hasPreviousRegistryHash =
     typeof registry.previousRegistry?.ipfsHash === "string" &&
@@ -104,20 +136,68 @@ export function validateRegistry({
   // A layer with no link while a registry is live cuts the published chain off. Only a full snapshot
   // the run asked for may, and only on testnet, which is reset from time to time; a mainnet reset
   // would strand every consumer walking its chain, and is not something a run does
-  if (liveTip && !registry.previousRegistry?.ipfsHash) {
+  const link = registry.previousRegistry?.ipfsHash;
+  if (liveCid && !link) {
     if (fullSnapshot && registry.network === "testnet") {
       warnings.push({
         path: "previousRegistry",
-        message: `Full snapshot: this replaces the published testnet chain (live version ${liveTip.version}) with a new base registry`,
+        message: `Full snapshot: this replaces the published testnet chain (live ${live}) with a new base registry`,
       });
     } else {
       errors.push({
         path: "previousRegistry.ipfsHash",
         message: fullSnapshot
-          ? `A full snapshot would cut off the published ${registry.network} chain (live version ${liveTip.version}); only testnet is reset this way`
-          : `A live registry exists (version ${liveTip.version}) but this registry has no previousRegistry.ipfsHash — it would be an orphan in the linked list`,
+          ? `A full snapshot would cut off the published ${registry.network} chain (live ${live}); only testnet is reset this way`
+          : `A live registry exists (${live}) but this registry has no previousRegistry.ipfsHash — it would be an orphan in the linked list`,
       });
     }
+  }
+
+  // A link that is not the live tip (a sourceCid) either sits below it, so that pointing the hostname
+  // at this layer orphans every layer above the link, or outside the live chain, so that consumers
+  // would follow a chain nobody served. Neither is published; a layer to build on is accepted first
+  // by pointing the hostname at it.
+  if (liveCid && link && link !== liveCid && liveChain && !liveChain.fatal) {
+    const above = layersAbove(liveChain, link);
+    const path = "previousRegistry.ipfsHash";
+    if (above !== null) {
+      errors.push({
+        path,
+        message:
+          `Links to ${link}, ${above} layer(s) below the live tip ${liveCid}: publishing this layer ` +
+          `would orphan them. To build on ${link} on purpose, point the hostname at it and accept it.`,
+      });
+    } else if (liveChain.complete) {
+      errors.push({
+        path,
+        message: `Links to ${link}, which is not in the published ${registry.network} chain (live tip ${liveCid})`,
+      });
+    } else {
+      errors.push({
+        path,
+        message: `Cannot tell whether ${link} is in the published ${registry.network} chain: ${liveChain.reason}`,
+      });
+    }
+  }
+
+  // --- version against the live chain ---
+  // A lower version means the run generated from an older commit than the one published. The
+  // indexer orders releases by it, so the layer would read as a step back. A full snapshot the run
+  // asked for is a deliberate reset and may start anywhere.
+  if (
+    liveCid &&
+    liveVersion &&
+    versionIsString &&
+    !fullSnapshot &&
+    compareProtocolVersionStrings(registry.version as string, liveVersion) < 0
+  ) {
+    errors.push({
+      path: "version",
+      message:
+        `Version ${registry.version} is lower than the live ${registry.network} registry's ` +
+        `${liveVersion}: a publish cannot rewind the published version. Generate from the release ` +
+        `branch head, or publish a full snapshot on purpose.`,
+    });
   }
 
   // --- chains ---
@@ -261,7 +341,7 @@ export function validateRegistry({
   // Structural checks pass on a delta that re-states already-published contracts, which is how a
   // near-full snapshot shipped three times. These compare the delta to the state it extends.
   let deltaStats: DeltaStats | null = null;
-  if (liveTip && liveChain && mode !== "full") {
+  if (liveCid && liveChain && mode !== "full") {
     if (liveChain.fatal) {
       // An unreachable layer only costs the invariant check; a chain from the other environment
       // means this registry is being compared to the wrong world entirely.

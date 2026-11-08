@@ -27,6 +27,9 @@ export async function pinLayer(
   const form = new FormData();
   form.append("file", new File([text], `${name}.json`, { type: "application/json" }));
   form.append("network", "public");
+  // Named rather than left to Pinata's default: v1 is raw leaves, 256 KiB chunks and 174 links per
+  // node, what `ipfs add --cid-version=1` gives and what verifyLayer rebuilds a dag-pb CID from
+  form.append("cid_version", "v1");
   form.append("name", name);
   form.append(
     "keyvalues",
