@@ -348,6 +348,8 @@ What exists outside this repository, and where it is managed:
 | R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                                                                                                      |
 | Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                                                                                                    |
 | Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                                                                                                 |
+| Deploy token (`CLOUDFLARE_DEPLOY_API_TOKEN` in this repository's `production` environment)                              | ops-v3 `tokens.yaml`, "protocol-registry - Deploy Workers (production)"                                                                                                       |
+| The `production` environment and its branch policy (`main` only)                                                        | GitHub, this repository's settings                                                                                                                                            |
 | Worker secrets                                                                                                          | 1Password, Environment "protocol-registry Worker"; see `scripts/push-secrets.sh`                                                                                              |
 | The GitHub App                                                                                                          | GitHub organization settings                                                                                                                                                  |
 | Who may publish `@centrifuge/registry-core`                                                                             | npmjs, the package's settings: Trusted publishing (stage only) and Publishing access (2FA, no bypass tokens); GitHub, this repository's `release` environment and tag ruleset |
@@ -371,7 +373,14 @@ is installed on and protocol-internal's workflows include deploys. Events: Push,
 run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 (`openssl pkcs8 -topk8 -nocrypt -in app.pem`).
 
-**Deploy.**
+**Deploy.** A merge to `main` deploys the Worker. The "Deploy" workflow
+(`.github/workflows/deploy.yml`) runs the type check and the tests, then `scripts/deploy.sh`. The script
+labels the version with the commit and the `PUBLISH_MODE`, and the job summary names the version.
+The workflow runs in the `production` environment, which allows deployments from `main` only. That
+environment holds `CLOUDFLARE_DEPLOY_API_TOKEN`, a token with Workers Scripts Write on the Official
+account. ops-v3's token reconciler creates it, rotates it and pushes it there. To deploy `main` again,
+run the workflow from the Actions tab. To deploy without the workflow, run the script from a clean
+checkout of `main`:
 
 ```bash
 NODE_SHIMS_MODE=local scripts/deploy.sh --profile centrifuge-prod
@@ -387,11 +396,10 @@ The script uploads only what `PUBLISH_MODE` needs: the GitHub App, Slack and man
 in `shadow`, `PINATA_JWT` too in `pin`, and the Web3 hostnames token too in `live`. That token stays
 in the ops-v3 item `.env.1password` references, where its reconciler rotates it.
 
-Variables live in `wrangler.jsonc`; changing one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
-the cutover) is a commit and a deploy. To move `PUBLISH_MODE` up, change it, run `push-secrets.sh`
-(it reads the mode from `wrangler.jsonc`), then deploy: the Worker holds the new credential before
-the mode that uses it. Only the first deploy comes before the secrets, so there is a Worker to hold
-them.
+Variables live in `wrangler.jsonc`. A change to one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
+the cutover) is a pull request, and its merge deploys it. See
+[Changing `PUBLISH_MODE`](docs/operations.md#changing-publish_mode). Only the first deploy comes
+before the secrets, so there is a Worker to hold them.
 
 ## Operations
 

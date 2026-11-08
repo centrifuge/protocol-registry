@@ -1,0 +1,80 @@
+name: Deploy
+
+# No path filter: when a deploy fails, the next push deploys main's head, whatever that push changed.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A deploy is never cancelled: a cancelled one can leave the new version live without its cron or
+# Workflow settings. A newer push waits for the running deploy, and replaces a run that has not
+# started yet.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy the Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The environment allows deployments from main only. It holds CLOUDFLARE_DEPLOY_API_TOKEN, which
+    # ops-v3's token reconciler manages ("protocol-registry - Deploy Workers (production)").
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # A re-run starts from the commit of its first attempt. If main moved on, that would put an
+      # older commit back live.
+      - name: Check a re-run still deploys main's head
+        if: github.run_attempt != '1'
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse origin/main)
+          if [ "${GITHUB_SHA}" != "${head}" ]; then
+            echo "::error::${GITHUB_SHA::7} is no longer the head of main (${head::7}). To deploy main, run the workflow from main."
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      # A pull request can merge without the latest main, so main's head may be a tree no CI run saw
+      - run: pnpm typecheck
+      - run: pnpm test
+
+      - name: Deploy
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::The production environment has no CLOUDFLARE_DEPLOY_API_TOKEN secret."
+            exit 1
+          fi
+          scripts/deploy.sh
+
+      - name: Name the deployed version
+        env:
+          SHA: ${{ steps.deploy.outputs.sha }}
+          MODE: ${{ steps.deploy.outputs.mode }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -rs 'map(select(.type == "deploy")) | last | .version_id // "not reported"' "${WRANGLER_OUTPUT_FILE_PATH}")
+          {
+            echo "### centrifuge-protocol-registry version \`${VERSION}\` is live"
+            echo "Commit [\`${SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}), PUBLISH_MODE \`${MODE}\`."
+            echo "The version's tag is \`${SHA}\`. Its message names the commit and the mode."
+          } >> "$GITHUB_STEP_SUMMARY"
