@@ -219,7 +219,10 @@ Otherwise, it keeps the trigger as the one pending run, and starts it when the a
 A run generates from the head of the release branch, so a newer trigger replaces the pending run. There
 is one exception: a push or the cron does not replace a pending manual run, because a manual run may
 carry options. An alarm checks whether the active run ended. So a run that stops without a report
-cannot block publishing. Previews do not use the Publisher, because they publish nothing.
+cannot block publishing. A run whose status cannot be read for 30 minutes, or that is older than 24
+hours when a read fails, is given up on: its instance is gone, deleted or past the Workflows
+retention. The Publisher records it with status `lost`, posts to Slack, and starts the pending run.
+Previews do not use the Publisher, because they publish nothing.
 
 ## How far a publish goes: `PUBLISH_MODE`
 

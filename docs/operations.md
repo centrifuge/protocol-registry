@@ -95,7 +95,9 @@ example in a switch to another deployment.
   and `.validation.json` give its layers and validation reports. R2 holds the same files under
   `runs/<id>/`.
 - `GET /status` shows the Publisher: the active run, the pending run, the last 20 runs, and under
-  `hostnames` the CID that the Worker last pointed each hostname at.
+  `hostnames` the CID that the Worker last pointed each hostname at. A run in the history with status
+  `lost` is one the Publisher gave up on, because its status could not be read for 30 minutes: its
+  instance was deleted, or outlived the Workflows retention. Slack gets a message when that happens.
 - Without the token, wrangler shows every step of a run, with the error of each attempt:
 
 ```bash

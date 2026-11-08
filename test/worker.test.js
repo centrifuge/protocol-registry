@@ -5,6 +5,7 @@ import { envTreeOf } from "../src/core/env.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
+import { RUN_MAX_AGE_MS, UNREADABLE_FOR_MS, verdict } from "../src/liveness.ts";
 import { hostnameReport, publishCheck, publishLines, toPublish } from "../src/report.ts";
 import {
   checkHostname,
@@ -469,4 +470,60 @@ test("a manual publish neither hides the push's check nor marks the release bran
   ]) {
     assert.deepEqual(publishCheck(reason, refused), expected);
   }
+});
+
+test("the Publisher polls a live run, records an ended one, and takes unknown as ended with an error", () => {
+  const run = { startedAt: 0 };
+  for (const status of ["queued", "running", "waiting", "paused"]) {
+    assert.deepEqual(verdict(run, { ok: true, status }, 60_000), { action: "poll" });
+  }
+  for (const status of ["complete", "errored", "terminated"]) {
+    assert.equal(verdict(run, { ok: true, status }, 60_000).action, "ended");
+  }
+  assert.deepEqual(verdict(run, { ok: true, status: "errored", error: "boom" }, 60_000), {
+    action: "ended",
+    status: "errored",
+    error: "boom",
+  });
+  const unknown = verdict(run, { ok: true, status: "unknown" }, 60_000);
+  assert.equal(unknown.action, "ended");
+  assert.equal(unknown.status, "unknown");
+  assert.ok(unknown.error, "an unknown instance is recorded with an error");
+});
+
+test("the Publisher gives up on a run whose status stays unreadable, and only then", () => {
+  const startedAt = 1_000_000;
+  const failed = { ok: false, error: "instance.not_found" };
+
+  // The first failed read starts the clock
+  const first = verdict({ startedAt }, failed, startedAt + 60_000);
+  assert.equal(first.action, "poll");
+  assert.deepEqual(first.unreadable, {
+    since: startedAt + 60_000,
+    attempts: 1,
+    error: failed.error,
+  });
+
+  // Within the bound: keep polling, counting the reads from the first failure
+  const run = { startedAt, unreadable: first.unreadable };
+  const later = verdict(run, failed, startedAt + 60_000 + UNREADABLE_FOR_MS - 1);
+  assert.equal(later.action, "poll");
+  assert.equal(later.unreadable.since, first.unreadable.since);
+  assert.equal(later.unreadable.attempts, 2);
+
+  // At the bound: lost, and the error says why
+  const lost = verdict(run, failed, startedAt + 60_000 + UNREADABLE_FOR_MS);
+  assert.equal(lost.action, "lost");
+  assert.match(lost.error, /instance\.not_found/);
+
+  // A read that works forgets the failures
+  assert.deepEqual(verdict(run, { ok: true, status: "running" }, startedAt + 120_000), {
+    action: "poll",
+  });
+
+  // A run past the retention age is given up on at the first failed read
+  const old = verdict({ startedAt }, failed, startedAt + RUN_MAX_AGE_MS);
+  assert.equal(old.action, "lost");
+  assert.match(old.error, /instance\.not_found/);
+  assert.equal(verdict({ startedAt }, failed, startedAt + RUN_MAX_AGE_MS - 1).action, "poll");
 });
