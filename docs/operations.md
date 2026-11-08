@@ -24,7 +24,9 @@ The usual case needs no action:
 - A pull request into protocol-internal's [release branch][pi-branch] that touches [`env/`][pi-env]
   gets a **Registry preview** check run. The check run shows the layer that each network would get, its retirements, and
   every finding. "Re-run" on the check runs it again.
-- A merge of that pull request publishes, as far as `PUBLISH_MODE` allows. Slack says what happened.
+- A merge of that pull request publishes, as far as `PUBLISH_MODE` allows. Slack says what happened,
+  in one line for each network, with a link to the **Registry publish** check run on the commit. The
+  check run holds the full report.
 - The cron also starts a publish run every six hours. So the Worker retries a dropped webhook or a
   failed run.
 
@@ -83,6 +85,8 @@ example in a switch to another deployment.
 
 `POST /runs` answers with the run id. Then:
 
+- The Slack message of a manual publish links to its **Registry publish (manual)** check run on the
+  protocol-internal commit. The check run holds the full report, and reading it needs no token.
 - `GET /runs/<id>` gives the status and report of the run. `GET /runs/<id>/registry-<network>.json`
   and `.validation.json` give its layers and validation reports. R2 holds the same files under
   `runs/<id>/`.

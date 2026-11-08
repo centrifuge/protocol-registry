@@ -37,7 +37,8 @@ manual POST /runs                     1. the commit: the PR head, or the release
                                       3. ABIs for every tag env uses, as protocol-internal built them
                                       4. each network: walk the published chain, generate, validate
                                       5a. preview → the PR's "Registry preview" check run
-                                      5b. publish → pin to Pinata, point the hostname's dnslink, Slack
+                                      5b. publish → pin to Pinata, point the hostname's dnslink,
+                                          the commit's "Registry publish" check run, Slack
 ```
 
 - **Pushes** to the release branch (`SOURCE_BRANCH` in `wrangler.jsonc`) that touch `env/` start a
