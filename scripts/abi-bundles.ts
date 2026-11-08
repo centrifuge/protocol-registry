@@ -1,5 +1,5 @@
 /**
- * The ABI bundles protocol-internal's build-abis.yml uploads to R2, for local runs: read with
+ * The ABI bundles protocol's build-abis.yml uploads to R2, for local runs: read with
  * `wrangler r2 object get --remote` under the operator's wrangler login, and kept in a local directory
  * in the bucket's layout (`<dir>/<tag>/manifest.json`, `<dir>/<tag>/<Artifact>.json`, see
  * src/io/abis.ts). Only the artifacts a run asks for are fetched.

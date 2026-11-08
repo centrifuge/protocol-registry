@@ -9,17 +9,17 @@ longer in use, it also gives the block where its listener ends. There is one reg
 
 Two repositories make the registry:
 
-- **protocol-internal holds the inputs.** Its deploy scripts record each deployed contract in `env/`
-  on the release branch. Its release tags give the source of each ABI.
-- **This repository holds the program.** A Cloudflare Worker reads protocol-internal's `env/`,
-  generates the registry from it, and publishes the result.
+- **The protocol repository holds the inputs.** Its deploy scripts record each deployed contract in
+  `env/` on the release branch. Its release tags give the source of each ABI.
+- **This repository holds the program.** A Worker reads protocol's `env/`, generates the registry
+  from it, and publishes the result.
 
-A GitHub App connects the two repositories. It sends protocol-internal's push, pull request and
-check run events to the Worker. It also lets the Worker read protocol-internal and post check runs
-there. An R2 bucket carries the ABIs from protocol-internal to the Worker.
+A GitHub App connects the two repositories. It sends protocol's push, pull request and check run
+events to the Worker. It also lets the Worker read protocol and post check runs there. An R2 bucket
+carries the ABIs from protocol to the Worker.
 
 The Worker replaces the [`script/registry/`][pi-script-registry] scripts and the
-[`registry.yml`][pi-registry-yml] workflow that each live branch of protocol-internal carried.
+[`registry.yml`][pi-registry-yml] workflow that each live branch of protocol carried.
 [registry-format.md](registry-format.md) describes the layer format. [operations.md](operations.md)
 describes day-to-day operation.
 
@@ -47,17 +47,18 @@ flowchart LR
     pubGenerate["The same checks<br/>and generation,<br/>on the branch head"]
     pinLayer["Pin each new layer<br/>to IPFS through Pinata"]
     pointDns["Point the DNSLink<br/>of the hostname<br/>at the new CID"]
-    postSlack["Post the result to Slack"]
+    pubCheck["A check run<br/>on the commit<br/>holds the full report"]:::pi
+    postSlack["Slack gets a short message<br/>with a link to the report"]
     mergeChange -->|"GitHub App:<br/>push event"| pubStart
     cronTrigger --> pubStart
-    pubStart --> pubGenerate --> pinLayer --> pointDns --> postSlack
+    pubStart --> pubGenerate --> pinLayer --> pointDns --> pubCheck --> postSlack
   end
 
   previewLane ~~~ publishLane
   classDef pi fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
 ```
 
-The blue boxes are in protocol-internal. All other boxes are in the Worker.
+The blue boxes are in protocol. All other boxes are in the Worker.
 
 - `SOURCE_BRANCH` in `wrangler.jsonc` names the release branch. Today it is [`live-v3.3`][pi-branch].
 - Only a push or a pull request that changes `env/` starts a run. A pull request that changes nothing
@@ -73,12 +74,12 @@ The blue boxes are in protocol-internal. All other boxes are in the Worker.
 from the newest layer back to the base, and merge the layers. The newest layer wins.
 
 A publish run adds one layer to each network that has changes and no errors. The hostname of each
-network is a Cloudflare Web3 gateway hostname. Its DNSLink names the CID of the newest layer. So the
-run pins the new layer first, and then points the DNSLink at its CID.
+network is a Web3 gateway hostname. Its DNSLink names the CID of the newest layer. So the run pins
+the new layer first, and then points the DNSLink at its CID.
 
 ## The pieces
 
-### In protocol-internal
+### In protocol
 
 - **[`env/`][pi-env] on the release branch.** This is the record of what is deployed.
   - `env/<environment>/<network>.json` is the config of one chain. Deploy scripts write it.
@@ -93,9 +94,9 @@ run pins the new layer first, and then points the DNSLink at its CID.
   builds the ABIs of the tag once. It uploads them to the R2 bucket under `abis/<tag>/`. The Worker
   cannot run git or forge, so it needs these builds.
 - **The installation of the GitHub App** "Centrifuge Protocol Registry". The App is installed on
-  protocol-internal only.
+  protocol only.
 
-protocol-internal does not generate, validate or publish the registry. This repository does.
+The protocol repository does not generate, validate or publish the registry. This repository does.
 
 ### In this repository
 
@@ -106,7 +107,7 @@ protocol-internal does not generate, validate or publish the registry. This repo
 - **RegistryRun** (`src/workflow.ts`), a Workflow. It does one run as durable steps. Each step
   retries on its own.
 - **The generator** (`src/core/`). It computes and validates the layers. It does no I/O. The clients
-  for GitHub, IPFS, Pinata, Cloudflare and Slack are in `src/io/`.
+  for GitHub, IPFS, Pinata, the gateway API and Slack are in `src/io/`.
 - **`@centrifuge/registry-core`**, on npmjs. It is the layer reading and verification code of
   `src/core/`, for consumers that pin a registry head (see the README's Package section).
 - **`wrangler.jsonc`**, the settings of the Worker: `SOURCE_REPO`, `SOURCE_BRANCH`, `PUBLISH_MODE`,
@@ -114,38 +115,39 @@ protocol-internal does not generate, validate or publish the registry. This repo
 
 ### Outside both repositories
 
-- **The R2 bucket `centrifuge-protocol-registry`**, in the Cloudflare Official account. ops-v3
-  manages it. It holds the ABI bundles from `build-abis.yml`, and the caches and run output of the
-  Worker. See [What lives where](#what-lives-where).
+- **The R2 bucket `centrifuge-protocol-registry`**. The infrastructure repository manages it. It
+  holds the ABI bundles from `build-abis.yml`, and the caches and run output of the Worker. See
+  [What lives where](#what-lives-where).
 - **Pinata** pins each published layer to IPFS.
-- **The Cloudflare Web3 hostnames** `registry.centrifuge.io` and `registry.testnet.centrifuge.io`.
-  The DNSLink of each hostname names the CID of its newest layer.
-- **Slack** receives a message when a publish run publishes, refuses or fails.
+- **The Web3 gateway hostnames** `registry.centrifuge.io` and `registry.testnet.centrifuge.io`. The
+  DNSLink of each hostname names the CID of its newest layer.
+- **Slack** receives a short message for each publish, refusal and failure. A publish or refusal
+  message links to the full report on GitHub.
 - **Consumers** are the indexers and apps that read the chain: api-v3, event-lake and the apps built
   on it. See [Consumers](#consumers).
 
 ### How they connect
 
-| From → to                          | When                                                                                                                                          | Credential                                                                                                                                  | What crosses                                                                                            |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| protocol-internal → Worker         | A push to the release branch. A pull request into it opens, gets new commits, reopens or becomes ready for review. Someone re-runs the check. | `GITHUB_WEBHOOK_SECRET`. The Worker checks the HMAC signature of each event.                                                                | The event: the branch, the changed paths, and for a pull request its number and head commit             |
-| Worker → protocol-internal, reads  | Each run, and each event that asks for a preview                                                                                              | An installation token of the App. The Worker signs a JWT with `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY`, and exchanges it for the token. | The head of the release branch, `env/` at a commit, tags and their commits, the files of a pull request |
-| Worker → protocol-internal, writes | Each pull request preview                                                                                                                     | The same installation token                                                                                                                 | The "Registry preview" check run on the head commit of the pull request                                 |
-| protocol-internal → R2             | `build-abis.yml` runs for a pushed release tag, or by hand                                                                                    | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`, repository secrets of protocol-internal. They give access to this bucket only.               | `abis/<tag>/<Artifact>.json` and `abis/<tag>/manifest.json`                                             |
-| R2 → Worker                        | Each run                                                                                                                                      | The `REGISTRY_BUCKET` binding                                                                                                               | The ABI bundles                                                                                         |
-| IPFS gateways → Worker             | Each generate step                                                                                                                            | None                                                                                                                                        | The published layers, to walk the chain. R2 caches each layer by CID.                                   |
-| Worker → Pinata                    | Each publish run in `pin` or `live` mode                                                                                                      | `PINATA_JWT`                                                                                                                                | The new layer                                                                                           |
-| Worker → Cloudflare API            | Each run in `live` mode. Below `live`, the Worker reads the CID from public DNS.                                                              | `CLOUDFLARE_API_TOKEN`                                                                                                                      | The CID that the hostname serves. For a publish, also the new DNSLink `/ipfs/<cid>`.                    |
-| Worker → Slack                     | A publish run that publishes, refuses or fails                                                                                                | `SLACK_WEBHOOK_URL`                                                                                                                         | One message                                                                                             |
+| From → to                 | When                                                                                                                                          | Credential                                                                                                                                  | What crosses                                                                                                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| protocol → Worker         | A push to the release branch. A pull request into it opens, gets new commits, reopens or becomes ready for review. Someone re-runs the check. | `GITHUB_WEBHOOK_SECRET`. The Worker checks the HMAC signature of each event.                                                                | The event: the branch, the changed paths, and for a pull request its number and head commit                                                                                                    |
+| Worker → protocol, reads  | Each run, and each event that asks for a preview                                                                                              | An installation token of the App. The Worker signs a JWT with `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY`, and exchanges it for the token. | The head of the release branch, `env/` at a commit, tags and their commits, the files of a pull request                                                                                        |
+| Worker → protocol, writes | Each pull request preview. Each publish run that publishes or refuses.                                                                        | The same installation token                                                                                                                 | For a preview, the "Registry preview" check run on the head commit of the pull request. For a publish, the "Registry publish" check run on the commit it published from, with the full report. |
+| protocol → R2             | `build-abis.yml` runs for a pushed release tag, or by hand                                                                                    | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`, repository secrets of protocol. They give access to this bucket only.                        | `abis/<tag>/<Artifact>.json` and `abis/<tag>/manifest.json`                                                                                                                                    |
+| R2 → Worker               | Each run                                                                                                                                      | The `REGISTRY_BUCKET` binding                                                                                                               | The ABI bundles                                                                                                                                                                                |
+| IPFS gateways → Worker    | Each generate step                                                                                                                            | None                                                                                                                                        | The published layers, to walk the chain. R2 caches each layer by CID.                                                                                                                          |
+| Worker → Pinata           | Each publish run in `pin` or `live` mode                                                                                                      | `PINATA_JWT`                                                                                                                                | The new layer                                                                                                                                                                                  |
+| Worker → gateway API      | Each run in `live` mode. Below `live`, the Worker reads the CID from public DNS.                                                              | `CLOUDFLARE_API_TOKEN`                                                                                                                      | The CID that the hostname serves. For a publish, also the new DNSLink `/ipfs/<cid>`.                                                                                                           |
+| Worker → Slack            | A publish run that publishes, refuses or fails. A cron run does not repeat its last message.                                                  | `SLACK_WEBHOOK_URL`                                                                                                                         | One short message. A publish or refusal message links to the "Registry publish" check run.                                                                                                     |
 
-The App sends its events to `POST /webhooks/github` on the `workers.dev` URL of the Worker. The App
-has Contents read, Pull requests read and Checks write. So the Worker can read protocol-internal and
-post check runs, but it cannot change the code or the files of protocol-internal. The App has no
-Actions permission, so the Worker cannot start or read the workflows of protocol-internal.
+The App sends its events to `POST /webhooks/github` on the Worker. The App has Contents read, Pull
+requests read and Checks write. So the Worker can read protocol and post check runs, but it cannot
+change the code or the files of protocol. The App has no Actions permission, so the Worker cannot
+start or read the workflows of protocol.
 
 ## A change, from deploy to published layer
 
-1. **A deploy writes configs.** A deploy script records what it deployed in protocol-internal's
+1. **A deploy writes configs.** A deploy script records what it deployed in protocol's
    [`env/<environment>/<network>.json`][pi-env], on a branch. Someone then opens a pull request into the release
    branch. `SOURCE_BRANCH` in `wrangler.jsonc` names the release branch (`live-v3.3` today).
 2. **The pull request gets a preview.**
@@ -176,12 +178,20 @@ Actions permission, so the Worker cannot start or read the workflows of protocol
    the Publisher for a publish run. The run generates from the head of the release branch. Then, for
    each network whose layer is publishable (it changes something) and has no errors, the run:
    1. **pins** the layer to IPFS through Pinata.
-   2. **points** the hostname of the network at the new CID, through the Cloudflare API. Before that,
+   2. **points** the hostname of the network at the new CID, through the gateway API. Before that,
       the run checks that the hostname still serves the CID that the layer was built on. If something
       else published a layer in between, the run stops, because the new CID would orphan that layer.
 
-   The run judges each network on its own, so an error on testnet does not stop mainnet. Slack gets one
-   message per publish run. The message names what the run published, pinned or refused.
+   The run judges each network on its own, so an error on testnet does not stop mainnet.
+
+   The run then reports in two places:
+   - A **Registry publish** check run on the commit it published from holds the full report. Anyone
+     who can read protocol can open it.
+   - Slack gets one message per publish run. The message has one line for each network that the run
+     published, pinned or refused, and a link to the check run.
+
+   A manual run reports on a **Registry publish (manual)** check run instead. Its refusal is neutral,
+   so a run that someone tries by hand does not mark the release branch red.
 
 5. **The cron reconciles.** Every six hours, the Worker asks for a publish run. So the Worker retries a
    webhook that GitHub dropped, or a run that failed, before anyone notices. A run with nothing to
@@ -210,21 +220,21 @@ cannot block publishing. Previews do not use the Publisher, because they publish
 | `pin`    |     ✓     |      ✓       |                     | `PINATA_JWT`                         |
 | `live`   |     ✓     |      ✓       |          ✓          | `PINATA_JWT`, `CLOUDFLARE_API_TOKEN` |
 
-`PUBLISH_MODE` is a variable in `wrangler.jsonc`. To change it, commit the change and deploy the Worker.
-The Worker holds only the credentials that its mode needs, because `scripts/push-secrets.sh` uploads
-them by mode. A mode without its credentials refuses to run. It does not do less instead. Until
-`live`, the Worker cannot change what the hostnames serve.
+`PUBLISH_MODE` is a variable in `wrangler.jsonc`. To change it, merge a change to `main`.
+The merge deploys the Worker. The Worker holds only the credentials that its mode needs, because
+`scripts/push-secrets.sh` uploads them by mode. A mode without its credentials refuses to run. It
+does not do less instead. Until `live`, the Worker cannot change what the hostnames serve.
 
 In `pin` mode, the Worker pins a publishable layer and posts its CID to Slack, but nothing points at the
 layer. So `pin` is the place to inspect a real layer before a hostname serves it.
 
-`CLOUDFLARE_API_TOKEN` is the token that ops-v3 manages as "ops-v3 control web3 hostnames and DNS". It
+`CLOUDFLARE_API_TOKEN` is the Web3 hostnames token that the infrastructure repository manages. It
 has Web3 Hostnames Write and DNS Read on `centrifuge.io`. It can point any Web3 hostname on the zone at
 a new CID, not only the registry hostnames. For this reason, the Worker holds it only in `live` mode.
 
 ## What keeps a publish safe
 
-- **Previews before merges.** Every PR into the release branch that touches protocol-internal's [`env/`][pi-env]
+- **Previews before merges.** Every PR into the release branch that touches protocol's [`env/`][pi-env]
   shows the exact layers it would publish, with every finding, before it merges.
 - **Deltas against the whole chain.** The Worker computes a layer against the accumulated state of
   every published layer, never against the newest layer alone. So a layer carries exactly what changed.
@@ -234,7 +244,7 @@ a new CID, not only the registry hostnames. For this reason, the Worker holds it
   - finds a layer of the other network.
   - would produce a layer with validation errors.
 - **Nothing is retired by omission.** A contract missing from `env/` stays as published. Retirement is
-  a declaration in protocol-internal's [`retired.json`][pi-env] (see
+  a declaration in protocol's [`retired.json`][pi-env] (see
   [registry-format.md](registry-format.md#retirement)).
 - **One publisher, and a moved tip stops it.** The Publisher lets one publish run go at a time. Before a
   publish run points a hostname at a new CID, it checks that the hostname still serves the CID it built
@@ -274,25 +284,25 @@ true.
 
 ### Inputs
 
-- **protocol-internal's [`env/`][pi-env] on the release branch is the record of what is deployed.** Deploy
+- **protocol's [`env/`][pi-env] on the release branch is the record of what is deployed.** Deploy
   scripts write it, and nothing else feeds the registry. The Worker does not publish a contract that is
   deployed but not recorded. It publishes a config edited by hand as written.
 - **One release branch publishes.** `SOURCE_BRANCH` names it. Other live branches publish nothing. A
-  new release reaches the registry only after `SOURCE_BRANCH` names its branch and someone deploys the
-  Worker.
+  new release reaches the registry only after a change that sets `SOURCE_BRANCH` to its branch merges
+  to `main`. The merge deploys the Worker.
 - **Every config entry has an integer `blockNumber`.** The Worker derives the start block of the chain
   from these numbers. Generation refuses an entry without one. It does not fetch the number from
   elsewhere.
-- **Every contract `version` resolves to a tag**, directly or through protocol-internal's
+- **Every contract `version` resolves to a tag**, directly or through protocol's
   [`env/<dir>/versions.json`][pi-env]. An alias is the claim of the deployment that it runs the source at that
   tag. Nothing checks this claim, so reviewers treat an alias like code.
-- **Absence is not retirement.** Retirement is a declaration in protocol-internal's [`retired.json`][pi-env]. A
+- **Absence is not retirement.** Retirement is a declaration in protocol's [`retired.json`][pi-env]. A
   contract that `env/` stops listing stays published. A release that replaces a contract under a new key
   must retire the old contract. Otherwise, indexers keep listening to both.
 
 ### ABIs
 
-- **The source at a tag never changes.** protocol-internal's [`build-abis.yml`][pi-build-abis] builds each tag once, and
+- **The source at a tag never changes.** protocol's [`build-abis.yml`][pi-build-abis] builds each tag once, and
   the bundle records the commit. The Worker refuses a moved tag until someone builds it again.
 - **Every tag is built.** `build-abis.yml` runs when someone pushes a tag. GitHub starts no run for a
   tag pushed with `GITHUB_TOKEN`, or for more than three tags in one push. Someone dispatches the
@@ -303,7 +313,7 @@ true.
   error.
 - **A contract key names its artifact.** The key is capitalized (`hub` → `Hub`). A factory also needs
   its product. A key that does not map needs an entry in `src/core/abi-names.ts` **in this
-  repository**. Until that entry lands here, a protocol-internal change that adds such a key fails its
+  repository**. Until that entry lands here, a change in protocol that adds such a key fails its
   preview with a missing ABI.
 
 ### Publishing
@@ -337,25 +347,26 @@ true.
 - **Credentials follow the mode.** The Worker holds only what `PUBLISH_MODE` needs.
   `scripts/push-secrets.sh` uploads it. After you rotate a secret, run the script again. A mode that
   misses its credential fails every publish run. It does not do less instead.
-- **Deploys are manual.** Someone logged in to the Cloudflare account deploys a commit on `main` with
-  `scripts/deploy.sh`.
-- **The GitHub App stays installed on protocol-internal,** with the webhook secret that the Worker
+- **A merge to `main` deploys.** The "Deploy" workflow runs `scripts/deploy.sh` in the `production`
+  environment.
+- **The GitHub App stays installed on protocol,** with the webhook secret that the Worker
   holds. Without its events, previews stop, and publishing waits for the cron every six hours.
 
 ## What lives where
 
-| What                                                        | Where                                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Configs, `retired.json`, `versions.json`, `registry.json`   | protocol-internal, [`env/`][pi-env] on the release branch                                                                                                                                                                                                                             |
-| ABI builds                                                  | protocol-internal `main`, [`.github/workflows/build-abis.yml`][pi-build-abis], with the repository secrets `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`                                                                                                                                |
-| R2 bucket `centrifuge-protocol-registry` (Official account) | `abis/<tag>/` (ABI bundles), `layers/<cid>.json` (published layers, cached), `snapshots/<sha>.json` (protocol-internal's `env/` at a commit), `runs/<id>/` (the layers, validation and report of each run). ops-v3 holds the bucket and the R2 token. See the README's Setup section. |
-| The Worker                                                  | This repository. Settings are in `wrangler.jsonc` (`SOURCE_REPO`, `SOURCE_BRANCH`, `PUBLISH_MODE`, hostnames, zone). Deploy it with `scripts/deploy.sh`, which labels each version with its commit.                                                                                   |
-| Worker secrets                                              | The 1Password Environment "protocol-registry Worker": `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `MANUAL_TRIGGER_TOKEN`, `PINATA_JWT`. Upload them with `scripts/push-secrets.sh`.                                                      |
-| `CLOUDFLARE_API_TOKEN`                                      | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS". `.env.1password` references its 1Password item. The ops-v3 reconciler rotates it.                                                                                                                                      |
-| The GitHub App                                              | GitHub organization settings. Installed on protocol-internal only.                                                                                                                                                                                                                    |
-| Hostnames                                                   | Cloudflare, Web3 gateways on the `centrifuge.io` zone                                                                                                                                                                                                                                 |
-| `@centrifuge/registry-core`                                 | npmjs. This repository's `publish-registry-core.yml` publishes it on a GitHub release, in the `release` environment.                                                                                                                                                                  |
-| Repository rules                                            | `main`: changes by pull request with one approval, signed commits, squash merges, the `checks` CI job. `registry-core-v*` tags: only admins create, move or delete them.                                                                                                              |
+| What                                                      | Where                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Configs, `retired.json`, `versions.json`, `registry.json` | protocol, [`env/`][pi-env] on the release branch                                                                                                                                                                                                                                                    |
+| ABI builds                                                | protocol `main`, [`.github/workflows/build-abis.yml`][pi-build-abis], with the repository secrets `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`                                                                                                                                                       |
+| R2 bucket `centrifuge-protocol-registry`                  | `abis/<tag>/` (ABI bundles), `layers/<cid>.json` (published layers, cached), `snapshots/<sha>.json` (protocol's `env/` at a commit), `runs/<id>/` (the layers, validation and report of each run). The infrastructure repository holds the bucket and the R2 token. See the README's Setup section. |
+| The Worker                                                | This repository. Settings are in `wrangler.jsonc` (`SOURCE_REPO`, `SOURCE_BRANCH`, `PUBLISH_MODE`, hostnames, zone). A merge to `main` deploys it with `scripts/deploy.sh`, which labels each version with its commit.                                                                              |
+| Worker secrets                                            | The 1Password Environment "protocol-registry Worker": `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `MANUAL_TRIGGER_TOKEN`, `PINATA_JWT`. Upload them with `scripts/push-secrets.sh`.                                                                    |
+| `CLOUDFLARE_API_TOKEN`                                    | The infrastructure repository, which also rotates it. `.env.1password` references its 1Password item.                                                                                                                                                                                               |
+| `CLOUDFLARE_DEPLOY_API_TOKEN`                             | The infrastructure repository, which pushes it to this repository's `production` environment. That environment allows deployments from `main` only.                                                                                                                                                 |
+| The GitHub App                                            | GitHub organization settings. Installed on protocol only.                                                                                                                                                                                                                                           |
+| Hostnames                                                 | Web3 gateways on the `centrifuge.io` zone                                                                                                                                                                                                                                                           |
+| `@centrifuge/registry-core`                               | npmjs. This repository's `publish-registry-core.yml` publishes it on a GitHub release, in the `release` environment.                                                                                                                                                                                |
+| Repository rules                                          | `main`: changes by pull request with one approval, signed commits, squash merges, the `checks` CI job. `registry-core-v*` tags: only admins create, move or delete them.                                                                                                                            |
 
 ## Cutting a release
 
@@ -363,24 +374,24 @@ A new release can need two changes, and they are independent. Changing `SOURCE_B
 ABIs. Building ABIs does not change the branch that the Worker publishes from.
 
 **The branch that the Worker publishes from.** This changes for a new release branch in
-protocol-internal (`live-v3.4`), or when protocol-internal's `env/` moves back to `main`.
+protocol (`live-v3.4`), or when protocol's `env/` moves back to `main`.
 
 1. Preview the head of the new branch: `POST /runs` with `"kind": "preview"` and the `"sha"` of that
    head (see [operations.md](operations.md#manual-runs)).
    - If its `env/` matches what is published, the preview shows nothing to publish.
    - If not, the first publish run from that branch publishes the difference.
 2. Set `SOURCE_BRANCH` in `wrangler.jsonc` to the new branch, and merge the change.
-3. Deploy the Worker with `scripts/deploy.sh`.
+3. The merge deploys the Worker. Check that the "Deploy" workflow run for the merge passes.
 
-**The ABIs of new tags.** protocol-internal's
+**The ABIs of new tags.** protocol's
 [`.github/workflows/build-abis.yml`][pi-build-abis] builds them. It does
 not depend on the Worker or on `SOURCE_BRANCH`. It runs when someone pushes a release tag to
-protocol-internal. GitHub starts no run for a tag pushed with `GITHUB_TOKEN`, or for any tag in a push
+protocol. GitHub starts no run for a tag pushed with `GITHUB_TOKEN`, or for any tag in a push
 of more than three tags. Dispatch the workflow by hand for those tags (see
 [operations.md](operations.md#abis)). A run that needs a tag without a bundle waits, then fails and
 names the tag.
 
-<!-- protocol-internal links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol-internal removes. -->
+<!-- protocol links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol removes. -->
 
 [pi-env]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env
 [pi-registry-json]: https://github.com/centrifuge/protocol-internal/blob/live-v3.3/env/registry.json

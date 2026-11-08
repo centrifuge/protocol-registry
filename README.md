@@ -5,20 +5,20 @@ deploy block and, once out of use, the block its indexer listener ends at. Index
 [api-v3](https://github.com/centrifuge/api-v3) read it from **registry.centrifuge.io** (mainnet) and
 **registry.testnet.centrifuge.io** (testnet).
 
-The registry is generated from the env configs that protocol-internal's deploy scripts write. This
-repository holds the generator and runs it as a Cloudflare Worker, triggered by GitHub. It replaces
+The registry is generated from the env configs that protocol's deploy scripts write. This
+repository holds the generator and runs it as a Worker, triggered by GitHub. It replaces
 [`script/registry/`][pi-script-registry] and the [`registry.yml`][pi-registry-yml] workflow, which each
-live branch of protocol-internal used to carry a copy of. Its layer reading and verification are also published as the package
+live branch of protocol used to carry a copy of. Its layer reading and verification are also published as the package
 [`@centrifuge/registry-core`](#package), for consumers that pin a registry head.
 
 - [How it works](#how-it-works)
-- [Inputs: protocol-internal's env/](#inputs-protocol-internals-env)
+- [Inputs: protocol's env/](#inputs-protocols-env)
 - [The published registry](#the-published-registry)
 - [ABIs](#abis)
 - [Package](#package)
 - [Setup](#setup)
 - [Operations](#operations)
-- [Moving off protocol-internal's pipeline](#moving-off-protocol-internals-pipeline)
+- [Moving off protocol's pipeline](#moving-off-protocols-pipeline)
 - [Development](#development)
 
 The [docs](docs/) go further: [how the registry works](docs/how-it-works.md), end to end; [the
@@ -27,10 +27,10 @@ registry format](docs/registry-format.md): schema, deltas, retirement and every 
 
 ## How it works
 
-protocol-internal holds the inputs. [docs/how-it-works.md](docs/how-it-works.md) shows both sides.
+protocol holds the inputs. [docs/how-it-works.md](docs/how-it-works.md) shows both sides.
 
 ```
-protocol-internal (GitHub App events)      this Worker
+protocol (GitHub App events)               this Worker
   pull request into the release branch ──► preview run
   push to the release branch ────────────► Publisher ──► publish run, one at a time
                                            cron, every 6 hours ──► Publisher
@@ -39,10 +39,11 @@ protocol-internal (GitHub App events)      this Worker
 Each run is a RegistryRun (Workflow, durable steps, each retried on its own):
   1. the commit: the PR head, or the release branch head
   2. env/ at that commit, checked: schema, retired.json, version tags
-  3. ABIs for every tag env uses, from R2, where protocol-internal's build-abis.yml put them
+  3. ABIs for every tag env uses, as protocol's build-abis.yml built them
   4. each network: walk the published chain, generate, validate
   5a. preview → the PR's "Registry preview" check run
-  5b. publish → pin to Pinata, point the hostname's dnslink, Slack
+  5b. publish → pin to Pinata, point the hostname's dnslink,
+      the commit's "Registry publish" check run, Slack
 ```
 
 - **Pushes** to the release branch (`SOURCE_BRANCH` in `wrangler.jsonc`) that touch `env/` start a
@@ -66,18 +67,18 @@ Each run is a RegistryRun (Workflow, durable steps, each retried on its own):
   A mode without its credentials refuses rather than doing less. Below `live`, the Worker does not
   hold the Web3 hostname token, so it cannot change what the hostnames serve.
 
-The generator (`src/core/`) is a port of `script/registry/` from protocol-internal's `live-v3.3`, as
-of [centrifuge/protocol-internal#522](https://github.com/centrifuge/protocol-internal/pull/522),
+The generator (`src/core/`) is a port of `script/registry/` from protocol's `live-v3.3`, as
+of [pull request #522](https://github.com/centrifuge/protocol-internal/pull/522),
 verified to produce byte-identical layers and validation reports (see the commits that ported it). It
 has no I/O of its own: env arrives as a snapshot, the chain through a layer fetcher, tags and ABIs
 through injected functions. `src/io/` holds those clients, `src/run.ts` the steps, and
 `scripts/generate.ts` runs the same thing locally. `src/core/` also holds layer verification and
 history diffing for other consumers, published as [`@centrifuge/registry-core`](#package).
 
-## Inputs: protocol-internal's env/
+## Inputs: protocol's env/
 
 Everything the registry says comes from [`env/`][pi-env] on the [release branch][pi-branch] of
-[protocol-internal](https://github.com/centrifuge/protocol-internal):
+[protocol](https://github.com/centrifuge/protocol-internal):
 
 | File                                    | Written by     | Says                                                                                                                                                       |
 | --------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -234,7 +235,7 @@ case and names the ABI it ships.
 ## ABIs
 
 A Worker cannot run git or forge, so ABIs are built ahead of time, once per release tag, by
-protocol-internal's [`.github/workflows/build-abis.yml`][pi-build-abis], which runs when a tag is pushed: it checks out
+protocol's [`.github/workflows/build-abis.yml`][pi-build-abis], which runs when a tag is pushed: it checks out
 the tag, runs `forge build` (and the `ir` profile, for `src-ir/`), and writes one R2 object per
 artifact, `abis/<tag>/<Artifact>.json`, then `abis/<tag>/manifest.json` with the commit it built. A
 tag pushed before that workflow existed is built by dispatching it by hand:
@@ -343,14 +344,16 @@ bypass 2FA: every version needs a maintainer's 2FA, and the repository holds no 
 
 What exists outside this repository, and where it is managed:
 
-| What                                                                                                                    | Where                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R2 bucket `centrifuge-protocol-registry` (Official account)                                                             | ops-v3, `cloudflare/terraform/Centrifuge Official (prod)/platform/r2.tf`                                                                                                      |
-| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol-internal's repository secrets | ops-v3, `cloudflare/scripts/manage-api-tokens/tokens.yaml`                                                                                                                    |
-| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                           | ops-v3 `tokens.yaml`, "ops-v3 control web3 hostnames and DNS"                                                                                                                 |
-| Worker secrets                                                                                                          | 1Password, Environment "protocol-registry Worker"; see `scripts/push-secrets.sh`                                                                                              |
-| The GitHub App                                                                                                          | GitHub organization settings                                                                                                                                                  |
-| Who may publish `@centrifuge/registry-core`                                                                             | npmjs, the package's settings: Trusted publishing (stage only) and Publishing access (2FA, no bypass tokens); GitHub, this repository's `release` environment and tag ruleset |
+| What                                                                                                           | Where                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R2 bucket `centrifuge-protocol-registry`                                                                       | The infrastructure repository                                                                                                                                                 |
+| Bucket-scoped R2 token, pushed as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` to protocol's repository secrets | The infrastructure repository                                                                                                                                                 |
+| Web3 hostnames token (`CLOUDFLARE_API_TOKEN`)                                                                  | The infrastructure repository                                                                                                                                                 |
+| Deploy token (`CLOUDFLARE_DEPLOY_API_TOKEN` in this repository's `production` environment)                     | The infrastructure repository                                                                                                                                                 |
+| The `production` environment and its branch policy (`main` only)                                               | GitHub, this repository's settings                                                                                                                                            |
+| Worker secrets                                                                                                 | 1Password, Environment "protocol-registry Worker"; see `scripts/push-secrets.sh`                                                                                              |
+| The GitHub App                                                                                                 | GitHub organization settings                                                                                                                                                  |
+| Who may publish `@centrifuge/registry-core`                                                                    | npmjs, the package's settings: Trusted publishing (stage only) and Publishing access (2FA, no bypass tokens); GitHub, this repository's `release` environment and tag ruleset |
 
 **Package publishing.** The repository's `release` environment allows deployments only from tags
 matching `registry-core-v*`, and the ruleset "registry-core release tags" lets only repository admins
@@ -364,20 +367,29 @@ The Worker is served on its `workers.dev` URL,
 `https://centrifuge-protocol-registry.<account subdomain>.workers.dev` (`<host>` below): the GitHub App
 is the only caller that needs it, and nothing about it needs a domain of its own.
 
-**GitHub App** ("Centrifuge Protocol Registry"). Installed on protocol-internal only, with webhook URL
+**GitHub App** ("Centrifuge Protocol Registry"). Installed on protocol only, with webhook URL
 `https://<host>/webhooks/github` and a webhook secret. Permissions: Contents read, Checks write, Pull
 requests read, Metadata read; no Actions permission, since an App's permissions apply to every repo it
-is installed on and protocol-internal's workflows include deploys. Events: Push, Pull request, Check
+is installed on and protocol's workflows include deploys. Events: Push, Pull request, Check
 run. Its private key is PKCS#1 as downloaded; the Worker needs PKCS#8
 (`openssl pkcs8 -topk8 -nocrypt -in app.pem`).
 
-**Deploy.**
+**Deploy.** A merge to `main` deploys the Worker. The "Deploy" workflow
+(`.github/workflows/deploy.yml`) runs the type check and the tests, then `scripts/deploy.sh`. The script
+labels the version with the commit and the `PUBLISH_MODE`, and the job summary names the version.
+The workflow runs in the `production` environment, which allows deployments from `main` only. That
+environment holds `CLOUDFLARE_DEPLOY_API_TOKEN`, a token with the Workers Scripts Write permission.
+The infrastructure repository creates it, rotates it and pushes it there. To deploy `main` again,
+run the workflow from the Actions tab. To deploy without the workflow, run the script from a clean
+checkout of `main`:
 
 ```bash
 NODE_SHIMS_MODE=local scripts/deploy.sh --profile centrifuge-prod
 ```
 
-**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later:
+**Secrets.** From the "protocol-registry Worker" 1Password Environment, with op 2.41.0 or later.
+`REGISTRY_OP_ENVIRONMENT` holds the Environment's ID (in the 1Password app: Developer > View
+Environments > Manage environment > Copy environment ID):
 
 ```bash
 NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
@@ -385,13 +397,12 @@ NODE_SHIMS_MODE=local scripts/push-secrets.sh --profile centrifuge-prod
 
 The script uploads only what `PUBLISH_MODE` needs: the GitHub App, Slack and manual-trigger secrets
 in `shadow`, `PINATA_JWT` too in `pin`, and the Web3 hostnames token too in `live`. That token stays
-in the ops-v3 item `.env.1password` references, where its reconciler rotates it.
+in the 1Password item `.env.1password` references, where the infrastructure repository rotates it.
 
-Variables live in `wrangler.jsonc`; changing one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
-the cutover) is a commit and a deploy. To move `PUBLISH_MODE` up, change it, run `push-secrets.sh`
-(it reads the mode from `wrangler.jsonc`), then deploy: the Worker holds the new credential before
-the mode that uses it. Only the first deploy comes before the secrets, so there is a Worker to hold
-them.
+Variables live in `wrangler.jsonc`. A change to one (`SOURCE_BRANCH` at a release, `PUBLISH_MODE` at
+the cutover) is a pull request, and its merge deploys it. See
+[Changing `PUBLISH_MODE`](docs/operations.md#changing-publish_mode). Only the first deploy comes
+before the secrets, so there is a Worker to hold them.
 
 ## Operations
 
@@ -418,7 +429,7 @@ curl -s https://<host>/status -H "Authorization: Bearer $TOKEN"
 `allowHistoryDrop`, and for a preview `sha`. A run's layers are at
 `GET /runs/<id>/registry-<network>.json` and `.validation.json`.
 
-**Locally**, with a protocol-internal checkout (for env and tags) and wrangler access to the bucket
+**Locally**, with a protocol checkout (for env and tags) and wrangler access to the bucket
 (`--wrangler-profile` picks an auth profile, as `wrangler --profile` does):
 
 ```bash
@@ -430,27 +441,27 @@ It writes `out/registry-<network>.json` and its validation report, and publishes
 **Auditing the chain:** `curl -s https://registry.centrifuge.io | jq .previousRegistry` gives the next
 CID; `dig TXT _dnslink.registry.centrifuge.io +short` the live one.
 
-## Moving off protocol-internal's pipeline
+## Moving off protocol's pipeline
 
 This follows the order of operations in
-[centrifuge/protocol-internal#460](https://github.com/centrifuge/protocol-internal/pull/460), with the
+[pull request #460](https://github.com/centrifuge/protocol-internal/pull/460), with the
 Worker taking the place of re-enabling `registry.yml` on `live-v3.3`.
 
 1. Merge #460 into `live-v3.3`; its `generate` job stays disabled.
-2. ops-v3: the R2 bucket and the R2 token. protocol-internal: `build-abis.yml`, then a dispatch for
+2. The infrastructure repository: the R2 bucket and the R2 token. protocol: `build-abis.yml`, then a dispatch for
    every existing release tag. Create the GitHub App and the 1Password Environment, deploy with
    `PUBLISH_MODE: "shadow"`, push the secrets.
 3. Shadow period: PRs into `live-v3.3` get previews; publishes post what they would publish. Then
    `pin`, with `PINATA_JWT`: real layers on IPFS,
-   compared against what protocol-internal's pipeline would publish, with nothing pointing at them.
+   compared against what protocol's pipeline would publish, with nothing pointing at them.
 4. Once the v3.3 deployment has written the configs,
    [centrifuge/api-v3#499](https://github.com/centrifuge/api-v3/issues/499) is merged, and
    `live-v3.2`'s `generate` job is disabled (its generator still tombstones on absence and would undo a
    v3.3 layer): push `CLOUDFLARE_API_TOKEN`, set `PUBLISH_MODE: "live"` and deploy. The Worker is the
    only publisher from then on.
 5. Remove `script/registry/`, `registry.yml`, the `detect-*` CI scripts and main's
-   `registry-publish.yml` from protocol-internal; drop protocol-internal as a destination of the Web3
-   token in ops-v3 and rotate it. `build-abis.yml` stays.
+   `registry-publish.yml` from protocol; drop protocol as a destination of the Web3
+   token in the infrastructure repository and rotate it. `build-abis.yml` stays.
 
 Where the Worker differs from the scripts it replaces:
 
@@ -506,7 +517,7 @@ network's hostname serves (or `--head`) through the gateways, verifies every lay
 gateway served matching bytes for. Run it for both networks before a release of the package and
 after a publish of a layer.
 
-<!-- protocol-internal links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol-internal removes. -->
+<!-- protocol links. Links to live-v3.3 follow SOURCE_BRANCH: change them with it. Links to commit 13c52d7 point at the old pipeline, which protocol removes. -->
 
 [pi-env]: https://github.com/centrifuge/protocol-internal/tree/live-v3.3/env
 [pi-registry-json]: https://github.com/centrifuge/protocol-internal/blob/live-v3.3/env/registry.json

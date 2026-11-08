@@ -37,7 +37,7 @@ export function versionTagCandidates(
 /**
  * Resolves a contract version to the first candidate tag that exists.
  *
- * @param tagExists - Whether protocol-internal has that tag
+ * @param tagExists - Whether protocol has that tag
  * @throws If no candidate exists
  */
 export async function resolveVersionTag(

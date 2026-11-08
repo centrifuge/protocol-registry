@@ -3,7 +3,7 @@
   "name": "centrifuge-protocol-registry",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  // Centrifuge Official, the account that holds the centrifuge.io zone and its registry hostnames
+  // The account that holds the centrifuge.io zone and its registry hostnames
   "account_id": "1a71ac8bbd35fd2bf390fddf66a44294",
   // Served on workers.dev: the GitHub App posts to
   // https://centrifuge-protocol-registry.<account subdomain>.workers.dev/webhooks/github, and nothing
@@ -42,7 +42,7 @@
     "CLOUDFLARE_ZONE_ID": "b9a43e7d34e470e7ee9b1f41a34cc726",
   },
   // Published layers by CID (immutable), ABIs by tag (abis/<tag>/<Artifact>.json, written by
-  // protocol-internal's build-abis workflow), and each run's generated registries and reports
+  // protocol's build-abis workflow), and each run's generated registries and reports
   "r2_buckets": [
     {
       "binding": "REGISTRY_BUCKET",
@@ -62,7 +62,7 @@
     },
   ],
   // Secrets, uploaded from 1Password by scripts/push-secrets.sh (see README.md, "Setup"):
-  //   GITHUB_APP_ID            the App that reads protocol-internal and posts its PR check runs
+  //   GITHUB_APP_ID            the App that reads protocol and posts its PR check runs
   //   GITHUB_APP_PRIVATE_KEY   its key in PKCS#8 PEM (`openssl pkcs8 -topk8 -nocrypt -in app.pem`)
   //   GITHUB_WEBHOOK_SECRET    the App's webhook secret
   //   PINATA_JWT               pins layers; PUBLISH_MODE pin and live only

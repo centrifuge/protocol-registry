@@ -132,7 +132,7 @@ export async function checkEnv(config: RunConfig, tree: EnvTree): Promise<string
 
 /**
  * The tags the published deployments use that have no complete ABI bundle, built from the commit the
- * tag points at now. protocol-internal's build-abis.yml builds a tag when it is pushed.
+ * tag points at now. protocol's build-abis.yml builds a tag when it is pushed.
  */
 export async function missingAbis(config: RunConfig, tree: EnvTree): Promise<string[]> {
   const store = r2AbiStore(config.bucket);
