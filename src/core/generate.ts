@@ -88,7 +88,7 @@ export interface PublishedTip {
 export interface GenerateInput {
   network: Network;
   env: EnvTree;
-  /** The tip to build on; null when it could not be read. */
+  /** The tip to build on; null when nothing is published. A tip that cannot be read is refused first. */
   tip: PublishedTip | null;
   fetchLayer: FetchLayer;
   mode?: RegistryMode;
@@ -334,15 +334,13 @@ export async function generateRegistry(
   if (!fullMode) {
     // No tip means no published state to measure against, and every env contract then reads as new —
     // an inflated snapshot-as-a-delta that also leaves previousRegistry null and so presents itself as
-    // a base registry. An outage must not be able to publish that; deliberately publishing a base
-    // snapshot is what full mode is for, which is why there is no override here.
+    // a base registry. Deliberately publishing a base snapshot is what full mode is for, which is why
+    // there is no override here.
     if (!tip) {
       throw new RefusedError(
-        `Refusing to generate the ${network} registry: could not read the published tip. A delta is ` +
-          `measured against published state; without it every contract would be re-emitted as new and ` +
-          `the result would be pinned as a base registry. Retry once IPFS is reachable, or publish a ` +
-          `full snapshot on purpose.`,
-        true,
+        `Refusing to generate the ${network} registry: no registry is published to measure a delta ` +
+          `against. Every contract would be re-emitted as new and the result pinned as a base ` +
+          `registry. Publish a full snapshot on purpose.`,
       );
     }
     log.info(`  ✓ Tip ${tip.cid}, version ${tip.layer.version || "null (patch layer)"}`);
@@ -387,7 +385,7 @@ export async function generateRegistry(
         `across ${summary.chains} chain(s), ${accumulatedAbis.size} ABIs`,
     );
   } else if (!tip) {
-    log.warn(`  ⚠ No published ${network} registry reachable: this snapshot carries no history`);
+    log.warn(`  ⚠ No published ${network} registry: this snapshot starts the chain`);
   } else {
     // A snapshot restarts the chain: previousRegistry is null, and an indexer rebuilding from it sees
     // nothing published before it. The published chain is still read, to refuse a snapshot that

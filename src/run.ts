@@ -12,8 +12,10 @@ import { collectRegistryChain, slimLayer } from "./core/chain.ts";
 import { registryPointer, type EnvTree } from "./core/env.ts";
 import { validateEnvTree } from "./core/env-schema.ts";
 import { generateRegistry, RefusedError, type Logger, type RegistryMode } from "./core/generate.ts";
-import { NETWORKS, type Network } from "./core/types.ts";
+import { LayerVerificationError } from "./core/layer-verification-error.ts";
+import { NETWORKS, type Layer, type Network } from "./core/types.ts";
 import { validateRegistry } from "./core/validate.ts";
+import { verifyLayer } from "./core/verify.ts";
 import { publishedTags, versionTagErrors } from "./core/version-tags.ts";
 import { r2AbiStore } from "./io/abis.ts";
 import { commitInfo, envSnapshot, tagExists, type GitHub } from "./io/github.ts";
@@ -261,6 +263,29 @@ export async function missingAbis(config: RunConfig, tree: EnvTree): Promise<str
 }
 
 /**
+ * The tip a layer builds on, read from IPFS. A tip that cannot be read is not "nothing published":
+ * measured against nothing, a delta re-emits every contract as a base registry, and a snapshot passes
+ * the checks that read the chain for what it would drop. So the run refuses in every mode, and
+ * retries unless the bytes served for the CID are not its, which no retry changes.
+ */
+async function readTip(cid: string, network: Network, cache: LayerCache): Promise<Layer> {
+  try {
+    return await fetchRegistryFromIpfs(cid, { cache });
+  } catch (error) {
+    const unverifiable = error instanceof LayerVerificationError;
+    throw new RefusedError(
+      `Refusing to generate the ${network} registry: the tip ${cid} could not be read ` +
+        `(${(error as Error).message}). ` +
+        (unverifiable
+          ? `No gateway serves the bytes that CID names: check the CID given, or what the hostname ` +
+            `points at.`
+          : `Retry once IPFS is reachable.`),
+      !unverifiable,
+    );
+  }
+}
+
+/**
  * Generates and validates one network's next layer, storing it under the run, and reports what it
  * holds. A refusal is an outcome, not a failure; a refusal that can clear on its own (IPFS
  * unreachable) is thrown, so the step retries it.
@@ -277,15 +302,15 @@ export async function generateNetwork(
 
   const liveCid = await liveCidOf(config, network);
   const tipCid = options.sourceCid ?? liveCid;
-  const tipLayer = tipCid ? await fetchRegistryFromIpfs(tipCid, { cache }).catch(() => null) : null;
   const store = r2AbiStore(config.bucket);
 
   try {
+    const tip = tipCid ? { cid: tipCid, layer: await readTip(tipCid, network, cache) } : null;
     const generated = await generateRegistry(
       {
         network,
         env: tree,
-        tip: tipCid && tipLayer ? { cid: tipCid, layer: tipLayer } : null,
+        tip,
         fetchLayer,
         mode: options.mode,
         allowPartialChain: options.allowPartialChain,
@@ -298,17 +323,19 @@ export async function generateNetwork(
       },
     );
 
-    // Validation measures against the live tip, which is not the source when a CID was given
-    const liveTip = liveCid === tipCid ? tipLayer : liveCid ? await fetchLayer(liveCid) : null;
+    // Validation measures against the live chain, which is not the source when a CID was given
     const liveChain =
       liveCid === tipCid
         ? generated.chain
-        : liveTip
-          ? await collectRegistryChain(liveTip, { fetchLayer, expectedNetwork: network })
+        : liveCid
+          ? await collectRegistryChain(slimLayer(await readTip(liveCid, network, cache)), {
+              fetchLayer,
+              expectedNetwork: network,
+            })
           : null;
     const validation = validateRegistry({
       registry: generated.registry,
-      liveTip,
+      liveCid,
       liveChain,
       envChains: generated.envChains,
       fullSnapshot: generated.summary.mode === "full",
@@ -354,7 +381,21 @@ async function assertTip(config: RunConfig, network: Network, expected: string |
   if (current !== expected) throw new TipMovedError(network, expected, current);
 }
 
-/** Pins a generated layer, after checking the tip it builds on is still the one served. */
+/** Thrown when the CID Pinata returns for a pin does not name the bytes the Worker sent. */
+export class PinMismatchError extends Error {
+  constructor(network: Network, cid: string, reason: string) {
+    super(
+      `${network}: Pinata pinned the layer as ${cid}, which does not name the bytes the Worker sent ` +
+        `(${reason}). No hostname was pointed at it; nothing was changed.`,
+    );
+    this.name = "PinMismatchError";
+  }
+}
+
+/**
+ * Pins a generated layer, after checking the tip it builds on is still the one served, and proves
+ * the CID that comes back names the bytes it sent before anything points a hostname at it.
+ */
 export async function pinNetwork(
   config: RunConfig,
   runId: string,
@@ -371,6 +412,13 @@ export async function pinNetwork(
     version: layer.version ?? null,
     sha,
   });
+  // A CID that names other bytes would have every consumer, and the next run's chain walk, read a
+  // layer the Worker never generated. The pin itself serves nothing until a hostname points at it.
+  try {
+    await verifyLayer(cid, new TextEncoder().encode(text));
+  } catch (error) {
+    throw new PinMismatchError(outcome.network, cid, (error as Error).message);
+  }
   return cid;
 }
 

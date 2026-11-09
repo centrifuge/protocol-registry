@@ -40,6 +40,7 @@ import {
   generateNetwork,
   HostnameDriftError,
   loadEnv,
+  PinMismatchError,
   pinNetwork,
   pointHostname,
   publishMode,
@@ -47,9 +48,14 @@ import {
   type GeneratedOutcome,
 } from "./run.ts";
 
-/** A publish that met another publisher's change stops for good: a retry would meet it again. */
+/**
+ * A publish that met another publisher's change stops for good: a retry would meet it again. So does
+ * one whose pin came back under a CID that is not the layer's.
+ */
 const stopsForGood = (error: unknown) =>
-  error instanceof TipMovedError || error instanceof HostnameDriftError
+  error instanceof TipMovedError ||
+  error instanceof HostnameDriftError ||
+  error instanceof PinMismatchError
     ? new NonRetryableError(error.message)
     : error;
 
