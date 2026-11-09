@@ -331,6 +331,8 @@ true.
 - **Absence is not retirement.** Retirement is a declaration in protocol's [`retired.json`][pi-env]. A
   contract that `env/` stops listing stays published. A release that replaces a contract under a new key
   must retire the old contract. Otherwise, indexers keep listening to both.
+- **A retirement is final.** Nothing reopens a retired address, so `env/` may not list one again. The
+  run refuses it (see [registry-format.md](registry-format.md#retirement)).
 
 ### ABIs
 

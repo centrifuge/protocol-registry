@@ -213,6 +213,11 @@ So they are idempotent:
   and logs it as in force, not as a warning.
 - A changed `endBlock` is emitted again, as a correction.
 
+**A published retirement is final.** Nothing in the format reopens an address, and a consumer that
+read the `retired` entry has already ended its listener. So an address that the chain has retired may
+not come back into `env/`, under its old key or a new one: the run refuses it. Deploy to a new address
+instead, or leave the old one retired and out of `env/`.
+
 The published chain is the record that indexers read. The file and its git history are the record of
 who decided what, and why. The run never publishes `reason`.
 
@@ -223,6 +228,7 @@ The run checks each declaration against what the chain published. These are erro
 - a declaration that closes an address that `env/` lists.
 - an address that no layer published.
 - an `except` entry that matches nothing.
+- an address in `env/` that an earlier layer already retired.
 
 A declaration that closes nothing at all is a warning. The preview counts the retirements that a PR
 would publish, so reviewers see the list before the run publishes it.
@@ -408,6 +414,7 @@ checks what a layer means, against the accumulated chain:
 | -------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Projection**: the chain plus the layer gives every contract that protocol's `env/` lists, at its address and block | error    | an omitted change, an invented address, a block that does not agree with `env/`. A published contract that `env/` no longer lists stays kept, and is reported, not warned about |
 | **Retirements**: each `retired` entry closes, once, a published address that `env/` does not list                    | error    | the end of a current contract, an address never published, a restated published retirement (a changed `endBlock` is a correction, and warns)                                    |
+| **Finality**: no address that `env/` lists is one the chain has already retired                                      | error    | a retired address added to `env/` again, which emits nothing and leaves the listener closed while `env/` says the contract is live                                              |
 | **Minimality**: no entry restates the published address and block                                                    | error    | a delta inflated toward a snapshot, or a tombstone again on a retired contract                                                                                                  |
 | **ABI coverage**: every live contract resolves to an ABI in the chain or the layer                                   | error    | a contract that no indexer can decode                                                                                                                                           |
 | **Size**: the layer carries more than 30% of published contracts                                                     | warning  | the symptom a person notices first. Expected for a release that deploys everything again                                                                                        |
