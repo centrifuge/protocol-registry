@@ -63,7 +63,9 @@ The blue boxes are in protocol. All other boxes are in the Worker.
 
 - `SOURCE_BRANCH` in `wrangler.jsonc` names the release branch. Today it is [`live-v3.3`][pi-branch].
 - Only a push or a pull request that changes `env/` starts a run. A pull request that changes nothing
-  under `env/` gets no check run. A draft pull request gets a preview too.
+  under `env/` gets no check run. A draft pull request gets a preview too. GitHub lists at most 20
+  commits in a push event. A push of more commits, whose only change to `env/` is in an older commit
+  than those 20, starts no run from the push. The cron publishes it within six hours.
 - The cron is a trigger of the Worker itself. It asks for a publish run every six hours, so a missed
   event or a failed run gets a retry.
 - A maintainer can also start a preview or a publish run with `POST /runs`. See
@@ -220,7 +222,10 @@ Otherwise, it keeps the trigger as the one pending run, and starts it when the a
 A run generates from the head of the release branch, so a newer trigger replaces the pending run. There
 is one exception: a push or the cron does not replace a pending manual run, because a manual run may
 carry options. An alarm checks whether the active run ended. So a run that stops without a report
-cannot block publishing. Previews do not use the Publisher, because they publish nothing.
+cannot block publishing. A run whose status cannot be read for 30 minutes, or that is older than 24
+hours when a read fails, is given up on: its instance is gone, deleted or past the Workflows
+retention. The Publisher records it with status `lost`, posts to Slack, and starts the pending run.
+Previews do not use the Publisher, because they publish nothing.
 
 ## How far a publish goes: `PUBLISH_MODE`
 

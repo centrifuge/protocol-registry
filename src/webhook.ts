@@ -2,7 +2,9 @@
  * What a GitHub webhook delivery asks for, decided from the payload alone so the decision is
  * testable without the network:
  *
- *   - a push to the source branch that touches env/ → publish from that commit
+ *   - a push to the source branch that touches env/ → publish from that commit. GitHub lists at
+ *     most 20 commits in a push payload, so a larger push whose only env/ change is beyond the
+ *     20th is ignored here; the cron publishes it within six hours
  *   - a pull request into the source branch → a preview on its head commit (a check run), if its
  *     files touch env/; that is checked against the PR's file list before any check is posted
  *   - a check run re-requested from the PR page → the same preview again

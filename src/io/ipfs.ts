@@ -44,19 +44,6 @@ export interface LayerCache {
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** Validates that a string is an IPFS CID: v0 (Qm...) or v1 (baf...). */
-export function isValidIpfsHash(input: unknown): boolean {
-  if (!input || typeof input !== "string") return false;
-
-  // v0: Qm followed by 44 base58 characters (base58 excludes 0, O, I, l).
-  // v1: baf followed by 50+ base32 characters; kept permissive to tolerate other encodings.
-  const base58Char = "[1-9A-HJ-NP-Za-km-z]";
-  const cidV0Pattern = new RegExp(`^Qm${base58Char}{44}$`);
-  const cidV1Pattern = /^baf[a-z0-9]{50,}$/i;
-
-  return cidV0Pattern.test(input) || cidV1Pattern.test(input);
-}
-
 /**
  * Reports whether a CID is a plain path segment, safe to interpolate into a gateway URL and a cache
  * key.

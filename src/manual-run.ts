@@ -4,9 +4,10 @@
  * a run could not tell (a `sha` on a publish, a CID for two networks) only here.
  */
 
+import { CID } from "multiformats/cid";
+
 import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
-import { isValidIpfsHash } from "./io/ipfs.ts";
 import type { RunParams } from "./workflow.ts";
 
 export interface ManualRun {
@@ -29,6 +30,24 @@ export interface ManualRun {
   acceptLiveCid?: string;
 }
 
+/**
+ * Why `value` cannot name a layer, or null when it can. A layer is named by its CIDv1 in canonical
+ * form, and verification (core/verify.ts) refuses any other spelling of the same CID, a CIDv0
+ * included. Refusing it here spares a run that would retry a permanent refusal as an IPFS outage.
+ */
+function cidError(field: string, value: string): string | null {
+  let parsed: CID;
+  try {
+    parsed = CID.parse(value);
+  } catch {
+    return `${field} is not a CID`;
+  }
+  if (parsed.version !== 1 || parsed.toString() !== value) {
+    return `${field} must be a canonical CIDv1 (lower-case base32, as a layer is named), not ${value}`;
+  }
+  return null;
+}
+
 /** The run a body asks for, or why it gets none. */
 export function manualParams(body: ManualRun): RunParams | string {
   if (body.kind !== "preview" && body.kind !== "publish")
@@ -43,15 +62,18 @@ export function manualParams(body: ManualRun): RunParams | string {
   if (body.mode === "full" && (body.networks ?? NETWORKS).includes("mainnet")) {
     return `a full snapshot replaces the published chain, which only testnet does: pass "networks": ["testnet"]`;
   }
-  if (body.sourceCid && (!isValidIpfsHash(body.sourceCid) || body.networks?.length !== 1)) {
-    return `sourceCid must be a CID, with exactly one network`;
+  if (body.sourceCid) {
+    const refused = cidError("sourceCid", body.sourceCid);
+    if (refused) return refused;
+    if (body.networks?.length !== 1) return `sourceCid needs exactly one network`;
   }
   if (body.sha && body.kind === "publish") return `a publish always generates from the branch head`;
-  if (
-    body.acceptLiveCid &&
-    (body.kind !== "publish" || !isValidIpfsHash(body.acceptLiveCid) || body.networks?.length !== 1)
-  ) {
-    return `acceptLiveCid must be a CID, in a publish run with exactly one network`;
+  if (body.acceptLiveCid) {
+    const refused = cidError("acceptLiveCid", body.acceptLiveCid);
+    if (refused) return refused;
+    if (body.kind !== "publish" || body.networks?.length !== 1) {
+      return `acceptLiveCid needs a publish run with exactly one network`;
+    }
   }
   return {
     kind: body.kind,

@@ -9,7 +9,9 @@
  * except that a manual run, which may carry options, is not replaced by a push or the cron.
  *
  * Whether the active run has ended is polled with an alarm: a run that dies without reporting back
- * must not block publishing forever.
+ * must not block publishing forever. Nor must one whose status cannot be read any more (its instance
+ * deleted, or past the instance retention): ./liveness.ts bounds that wait, and a run past the bound
+ * is recorded as lost and announced on Slack.
  *
  * It also keeps, per network, the CID the Worker last pointed the hostname at (HostnameRecord in
  * ./run.ts). That record is what tells a hostname changed with a leaked Web3 token from one the Worker
@@ -20,6 +22,8 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { NETWORKS, type Network } from "./core/types.ts";
+import { notifySlack } from "./io/publish.ts";
+import { verdict, type StatusRead, type UnreadableStatus } from "./liveness.ts";
 import type { HostnameRecord } from "./run.ts";
 import type { RunParams } from "./workflow.ts";
 
@@ -27,6 +31,8 @@ interface ActiveRun {
   id: string;
   params: RunParams;
   startedAt: number;
+  /** Set while the run's status cannot be read; cleared by a read that works. */
+  unreadable?: UnreadableStatus;
 }
 
 interface FinishedRun extends ActiveRun {
@@ -44,7 +50,6 @@ export interface PublisherStatus {
 
 const POLL_MS = 60_000;
 const HISTORY = 20;
-const ENDED = new Set(["complete", "errored", "terminated"]);
 const hostnameKey = (network: Network) => `hostname/${network}`;
 
 export class Publisher extends DurableObject<Env> {
@@ -87,33 +92,55 @@ export class Publisher extends DurableObject<Env> {
     const active = await this.ctx.storage.get<ActiveRun>("active");
     if (!active) return;
 
-    let status: InstanceStatus;
+    let read: StatusRead;
     try {
-      status = await (await this.env.REGISTRY_RUN.get(active.id)).status();
+      const status = await (await this.env.REGISTRY_RUN.get(active.id)).status();
+      read = {
+        ok: true,
+        status: status.status,
+        ...(status.error && { error: status.error.message }),
+      };
     } catch (error) {
-      console.warn(`Could not read the status of run ${active.id}: ${(error as Error).message}`);
-      await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
-      return;
+      read = { ok: false, error: (error as Error).message };
+      console.warn(`Could not read the status of run ${active.id}: ${read.error}`);
     }
-    if (!ENDED.has(status.status)) {
-      await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+
+    const now = Date.now();
+    const next = verdict(active, read, now);
+    if (next.action === "poll") {
+      if (next.unreadable || active.unreadable) {
+        await this.ctx.storage.put("active", { ...active, unreadable: next.unreadable });
+      }
+      await this.ctx.storage.setAlarm(now + POLL_MS);
       return;
     }
 
-    const history = (await this.ctx.storage.get<FinishedRun[]>("history")) ?? [];
-    history.unshift({
+    const finished: FinishedRun = {
       ...active,
-      status: status.status,
-      finishedAt: Date.now(),
-      ...(status.error && { error: status.error.message }),
-    });
-    await this.ctx.storage.put("history", history.slice(0, HISTORY));
+      status: next.action === "ended" ? next.status : "lost",
+      finishedAt: now,
+      ...(next.error && { error: next.error }),
+    };
+    const history = (await this.ctx.storage.get<FinishedRun[]>("history")) ?? [];
+    await this.ctx.storage.put("history", [finished, ...history].slice(0, HISTORY));
     await this.ctx.storage.delete("active");
 
     const pending = await this.ctx.storage.get<RunParams>("pending");
     if (pending) {
       await this.ctx.storage.delete("pending");
       await this.start(pending);
+    }
+
+    if (next.action === "lost") {
+      // The run is already given up on; a message Slack did not take must not re-run this alarm
+      try {
+        await notifySlack(
+          this.env.SLACK_WEBHOOK_URL,
+          `:warning: *Registry publish run given up on* (${active.params.reason})\n>${next.error}\nRun \`${active.id}\`, started ${new Date(active.startedAt).toISOString()}. Publishing is no longer blocked by it.`,
+        );
+      } catch (error) {
+        console.error(`Could not announce the lost run ${active.id}: ${(error as Error).message}`);
+      }
     }
   }
 
