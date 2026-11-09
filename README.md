@@ -431,11 +431,11 @@ curl -s https://<host>/status -H "Authorization: Bearer $TOKEN"
 ```
 
 `POST /runs` takes `kind`, and optionally `networks`, `mode` (`auto`, `delta`, `patch`, `full`),
-`sourceCid` (build on that CID instead of the tip; one network), `allowPartialChain`,
-`allowHistoryDrop`, for a preview `sha`, and for a publish of one network `acceptLiveCid` (accept
-the CID the hostname serves after a change made outside the Worker; see
-[docs/operations.md](docs/operations.md#a-hostname-changed-outside-the-worker)). A run's layers are at
-`GET /runs/<id>/registry-<network>.json` and `.validation.json`.
+`sourceCid` (build on that CID instead of the tip; one network; a publish refuses a link that is
+not the live CID), `allowPartialChain`, `allowHistoryDrop`, for a preview `sha`, and for a publish
+of one network `acceptLiveCid` (accept the CID the hostname serves after a change made outside the
+Worker; see [docs/operations.md](docs/operations.md#a-hostname-changed-outside-the-worker)). A run's
+layers are at `GET /runs/<id>/registry-<network>.json` and `.validation.json`.
 
 **Locally**, with a protocol checkout (for env and tags) and wrangler access to the bucket
 (`--wrangler-profile` picks an auth profile, as `wrangler --profile` does):

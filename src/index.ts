@@ -3,7 +3,7 @@
  * step with protocol's env configs on the release branch.
  *
  *   POST /webhooks/github     the GitHub App's deliveries (see ./webhook.ts for what each one does)
- *   POST /runs                a manual run (bearer MANUAL_TRIGGER_TOKEN), see ./manual.ts
+ *   POST /runs                a manual run (bearer MANUAL_TRIGGER_TOKEN), see ./manual-run.ts
  *   GET  /runs/<id>           a run's status and report
  *   GET  /runs/<id>/<file>    a run's generated registry-<network>.json or .validation.json
  *   GET  /status              the publisher: active run, pending run, recent history, and the CID
@@ -14,7 +14,7 @@
 
 import { github, publisher } from "./config.ts";
 import { createCheckRun, pullRequestFiles, verifyWebhookSignature } from "./io/github.ts";
-import { manualParams, type ManualRun } from "./manual.ts";
+import { manualParams, type ManualRun } from "./manual-run.ts";
 import { route, touchesRegistryInputs } from "./webhook.ts";
 import type { RunParams } from "./workflow.ts";
 
@@ -100,10 +100,7 @@ async function handleRuns(request: Request, env: Env, path: string[]): Promise<R
 
   if (request.method === "GET" && path.length === 1) {
     const [id] = path;
-    // get() throws for an id Workflows does not know, a run past its retention included
-    const instance = await env.REGISTRY_RUN.get(id).catch(() => null);
-    if (!instance) return json({ error: "not found" }, 404);
-    const status = await instance.status();
+    const status = await (await env.REGISTRY_RUN.get(id)).status();
     const report = await env.REGISTRY_BUCKET.get(`runs/${id}/report.md`);
     return json({ id, ...status, report: (await report?.text()) ?? null });
   }

@@ -186,7 +186,8 @@ start or read the workflows of protocol.
 4. **The merge publishes.** The merge is a push to the release branch. A push that touches `env/` asks
    the Publisher for a publish run. The run generates from the head of the release branch. Then, for
    each network whose layer is publishable (it changes something) and has no errors, the run:
-   1. **pins** the layer to IPFS through Pinata.
+   1. **pins** the layer to IPFS through Pinata, and checks that the CID Pinata returns names the
+      bytes it sent. A CID that does not stops the run.
    2. **points** the hostname of the network at the new CID, through the gateway API. Before that,
       the run checks that the hostname still serves the CID that the layer was built on. If something
       else published a layer in between, the run stops, because the new CID would orphan that layer.
@@ -335,6 +336,8 @@ true.
 - **Absence is not retirement.** Retirement is a declaration in protocol's [`retired.json`][pi-env]. A
   contract that `env/` stops listing stays published. A release that replaces a contract under a new key
   must retire the old contract. Otherwise, indexers keep listening to both.
+- **A retirement is final.** Nothing reopens a retired address, so `env/` may not list one again. The
+  run refuses it (see [registry-format.md](registry-format.md#retirement)).
 
 ### ABIs
 

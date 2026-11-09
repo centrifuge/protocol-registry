@@ -48,16 +48,16 @@ op run --environment "$REGISTRY_OP_ENVIRONMENT" -- sh -c \
   "curl -sX POST $H/runs -H \"Authorization: Bearer \$MANUAL_TRIGGER_TOKEN\" -d '{\"kind\":\"preview\"}'"
 ```
 
-| Field               | Meaning                                                                                                                                             |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kind`              | `preview` (generate and validate, publish nothing) or `publish` (through the Publisher, as far as `PUBLISH_MODE` allows)                            |
-| `sha`               | Preview only: the protocol commit to generate from. A publish run always uses the head of the release branch.                                       |
-| `networks`          | `["mainnet"]`, `["testnet"]` or both (the default)                                                                                                  |
-| `mode`              | `auto` (default), `delta`, `patch` or `full` (see [Modes](registry-format.md#modes))                                                                |
-| `sourceCid`         | Build on this CID instead of the live layer. Needs exactly one network. Use it to generate a broken layer again, or to test against an older layer. |
-| `allowPartialChain` | Continue when the run cannot walk the whole chain. Expect the run to emit published contracts and retirements again.                                |
-| `allowHistoryDrop`  | Let a full snapshot drop published, unretired contracts. Use it only to replace the deployment on purpose.                                          |
-| `acceptLiveCid`     | Publish only, one network: accept this CID, which the hostname serves, after a change by hand. See [below](#a-hostname-changed-outside-the-worker). |
+| Field               | Meaning                                                                                                                                                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`              | `preview` (generate and validate, publish nothing) or `publish` (through the Publisher, as far as `PUBLISH_MODE` allows)                                                                                                                                       |
+| `sha`               | Preview only: the protocol commit to generate from. A publish run always uses the head of the release branch.                                                                                                                                                  |
+| `networks`          | `["mainnet"]`, `["testnet"]` or both (the default)                                                                                                                                                                                                             |
+| `mode`              | `auto` (default), `delta`, `patch` or `full` (see [Modes](registry-format.md#modes))                                                                                                                                                                           |
+| `sourceCid`         | Build on this CID instead of the live layer. Needs exactly one network. For a preview: generate a broken layer again, or test against an older layer. A publish refuses a layer that links to any CID but the live one (see [below](#what-a-publish-refuses)). |
+| `allowPartialChain` | Continue when the run cannot walk the whole chain. Expect the run to emit published contracts and retirements again.                                                                                                                                           |
+| `allowHistoryDrop`  | Let a full snapshot drop published, unretired contracts. Use it only to replace the deployment on purpose.                                                                                                                                                     |
+| `acceptLiveCid`     | Publish only, one network: accept this CID, which the hostname serves, after a change by hand. See [below](#a-hostname-changed-outside-the-worker).                                                                                                            |
 
 Examples of `-d` bodies:
 
@@ -87,6 +87,28 @@ curl -sX POST https://<host>/runs -H "Authorization: Bearer $TOKEN" \
 
 Add `"allowHistoryDrop": true` only when the snapshot drops live published contracts on purpose, for
 example in a switch to another deployment.
+
+### What a publish refuses
+
+Every run, a full snapshot included, reads the live layer and its chain. Validation refuses a layer
+that would cut the chain or rewind it, and the publish steps refuse a pin that cannot be checked:
+
+- **The live layer cannot be read.** The run refuses to generate the network, in every mode. A delta
+  measured against nothing re-emits every contract, and a snapshot cannot tell what it would drop.
+  The step retries while a gateway outage lasts. If the bytes that the gateways serve do not match the
+  CID, the run refuses for good: check what the hostname points at.
+- **The layer links to a CID that is not the live one.** With `sourceCid`, a layer links to the given
+  CID. If that CID is below the live layer, the publish would orphan every layer above it, and the
+  report says how many. If it is not in the live chain, the publish would serve a chain nobody
+  published. To build on an earlier layer on purpose, point the hostname at it and accept it (see
+  [Pointing a hostname back](#pointing-a-hostname-back)); then a plain publish builds on it.
+- **The version is lower than the live chain's.** A run that generates from an older commit than the
+  one published cannot rewind the version. Only a full snapshot, which starts the chain again, may
+  carry any version.
+- **Pinata returns a CID that does not name the layer.** The run pins with the `v1` profile, which is
+  what `ipfs add --cid-version=1` produces, and checks the CID it gets back against the bytes it sent
+  before it points a hostname at anything. A mismatch stops the publish for good, and the Slack message
+  names the CID. The pin stays on Pinata; nothing serves it.
 
 ## Following a run
 
@@ -257,7 +279,8 @@ make the `env/` checks that a run makes first (schema, `retired.json`, version t
 
 You rarely need `--source-cid`. By default, the script reads the live CID from the DNSLink of the
 hostname. Use `--source-cid` to compare against a specific older layer: to generate a broken layer
-again, or to test against a pinned CID.
+again, or to test against a pinned CID. The validation report then shows the error that a publish
+would refuse the layer with (see [What a publish refuses](#what-a-publish-refuses)).
 
 ## Auditing the published chain
 

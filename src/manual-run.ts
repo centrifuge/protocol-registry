@@ -1,6 +1,7 @@
 /**
- * What `POST /runs` accepts, and the run it asks for, decided from the body alone so the rules are
- * testable without the Worker.
+ * The body of `POST /runs`, checked into a run's parameters before a run starts. What a run would
+ * refuse anyway is refused here too, so an operator hears it at once rather than from a report; what
+ * a run could not tell (a `sha` on a publish, a CID for two networks) only here.
  */
 
 import { CID } from "multiformats/cid";
@@ -9,12 +10,14 @@ import type { RegistryMode } from "./core/generate.ts";
 import { NETWORKS, type Network } from "./core/types.ts";
 import type { RunParams } from "./workflow.ts";
 
-/** POST /runs */
 export interface ManualRun {
   kind: "preview" | "publish";
   networks?: Network[];
   mode?: RegistryMode;
-  /** Build on this CID instead of the live tip; needs exactly one network. */
+  /**
+   * Build on this CID instead of the live tip; needs exactly one network. A publish refuses a layer
+   * that links to any CID but the live one (see validateRegistry), so this previews.
+   */
   sourceCid?: string;
   allowPartialChain?: boolean;
   allowHistoryDrop?: boolean;
@@ -45,7 +48,7 @@ function cidError(field: string, value: string): string | null {
   return null;
 }
 
-/** The run a body asks for, or the reason it is refused. */
+/** The run a body asks for, or why it gets none. */
 export function manualParams(body: ManualRun): RunParams | string {
   if (body.kind !== "preview" && body.kind !== "publish")
     return `kind must be "preview" or "publish"`;

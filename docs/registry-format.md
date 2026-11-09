@@ -114,7 +114,8 @@ layers. For this reason, full mode still reads the published chain:
 
 `allowHistoryDrop` overrides the refusal for the one case where the drop is the purpose. That case is
 a switch of protocol's [`env/registry.json`][pi-registry-json] to another deployment, which changes every address
-in the registry. A snapshot made while no layer is reachable carries no history, and says so. While a
+in the registry. A snapshot while the live layer cannot be read is refused, like any other layer:
+the run cannot tell what the snapshot would drop. While a
 registry is live, only a testnet snapshot passes the orphan rule (see
 [Indexer hard requirements](#indexer-hard-requirements)).
 
@@ -212,6 +213,11 @@ So they are idempotent:
   and logs it as in force, not as a warning.
 - A changed `endBlock` is emitted again, as a correction.
 
+**A published retirement is final.** Nothing in the format reopens an address, and a consumer that
+read the `retired` entry has already ended its listener. So an address that the chain has retired may
+not come back into `env/`, under its old key or a new one: the run refuses it. Deploy to a new address
+instead, or leave the old one retired and out of `env/`.
+
 The published chain is the record that indexers read. The file and its git history are the record of
 who decided what, and why. The run never publishes `reason`.
 
@@ -222,6 +228,7 @@ The run checks each declaration against what the chain published. These are erro
 - a declaration that closes an address that `env/` lists.
 - an address that no layer published.
 - an `except` entry that matches nothing.
+- an address in `env/` that an earlier layer already retired.
 
 A declaration that closes nothing at all is a warning. The preview counts the retirements that a PR
 would publish, so reviewers see the list before the run publishes it.
@@ -372,15 +379,15 @@ Generation and publishing keep integers above 2^53 (the `chainSelector` of an ad
 `src/core/validate.ts` checks every layer against what indexers need. The rules apply to **active**
 contracts, which have a non-null `address`. Old tombstones skip the address, block and ABI rules.
 
-| Field                                           | Rule                                                                                                                                                                                                                            |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`                                       | A non-empty string for delta and full layers. `null` for a patch, and only with `previousRegistry.ipfsHash` set.                                                                                                                |
-| `previousRegistry.ipfsHash`                     | Set whenever a registry is live for the network, because a layer without it would be an orphan. Absent only for a base snapshot, which a live registry allows on testnet alone.                                                 |
-| `chains.<chainId>.deployment.startBlock`        | A number.                                                                                                                                                                                                                       |
-| `chains.<chainId>.contracts.<name>.address`     | A 20-byte address for every active contract.                                                                                                                                                                                    |
-| `chains.<chainId>.contracts.<name>.blockNumber` | A number for every active contract. A null block is a warning when the chain has a start block to use instead.                                                                                                                  |
-| `abis.<ArtifactName>`                           | Present for every active contract that the layer carries, and for the product of a factory, by the names in `src/core/abi-names.ts`.                                                                                            |
-| `chains.<chainId>.retired.<address>`            | A lowercase address that some layer published live. A string `contract`. A positive integer `endBlock`, at or after `blockNumber` when present. An address that protocol's `env/` lists, or a restated retirement, is an error. |
+| Field                                           | Rule                                                                                                                                                                                                                                                              |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                                       | A non-empty string for delta and full layers. `null` for a patch, and only with `previousRegistry.ipfsHash` set. Not below the newest version the live chain names, except in a full snapshot.                                                                    |
+| `previousRegistry.ipfsHash`                     | The live CID, whenever a registry is live for the network: a layer without a link would be an orphan, and one that links below the live layer orphans every layer above the link. Absent only for a base snapshot, which a live registry allows on testnet alone. |
+| `chains.<chainId>.deployment.startBlock`        | A number.                                                                                                                                                                                                                                                         |
+| `chains.<chainId>.contracts.<name>.address`     | A 20-byte address for every active contract.                                                                                                                                                                                                                      |
+| `chains.<chainId>.contracts.<name>.blockNumber` | A number for every active contract. A null block is a warning when the chain has a start block to use instead.                                                                                                                                                    |
+| `abis.<ArtifactName>`                           | Present for every active contract that the layer carries, and for the product of a factory, by the names in `src/core/abi-names.ts`.                                                                                                                              |
+| `chains.<chainId>.retired.<address>`            | A lowercase address that some layer published live. A string `contract`. A positive integer `endBlock`, at or after `blockNumber` when present. An address that protocol's `env/` lists, or a restated retirement, is an error.                                   |
 
 `txHash`, `previousRegistry.version` and `adapters` are soft fields. Retired entries carry no ABI,
 because the layer that published the address carried it.
@@ -407,6 +414,7 @@ checks what a layer means, against the accumulated chain:
 | -------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Projection**: the chain plus the layer gives every contract that protocol's `env/` lists, at its address and block | error    | an omitted change, an invented address, a block that does not agree with `env/`. A published contract that `env/` no longer lists stays kept, and is reported, not warned about |
 | **Retirements**: each `retired` entry closes, once, a published address that `env/` does not list                    | error    | the end of a current contract, an address never published, a restated published retirement (a changed `endBlock` is a correction, and warns)                                    |
+| **Finality**: no address that `env/` lists is one the chain has already retired                                      | error    | a retired address added to `env/` again, which emits nothing and leaves the listener closed while `env/` says the contract is live                                              |
 | **Minimality**: no entry restates the published address and block                                                    | error    | a delta inflated toward a snapshot, or a tombstone again on a retired contract                                                                                                  |
 | **ABI coverage**: every live contract resolves to an ABI in the chain or the layer                                   | error    | a contract that no indexer can decode                                                                                                                                           |
 | **Size**: the layer carries more than 30% of published contracts                                                     | warning  | the symptom a person notices first. Expected for a release that deploys everything again                                                                                        |

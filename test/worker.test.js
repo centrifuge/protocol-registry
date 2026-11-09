@@ -2,20 +2,32 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { envTreeOf } from "../src/core/env.ts";
+import { RefusedError } from "../src/core/generate.ts";
+import { unixfsFileRoot } from "../src/core/verify.ts";
 import { versionTagErrors } from "../src/core/version-tags.ts";
 import { appJwt, verifyWebhookSignature } from "../src/io/github.ts";
 import { dnslinkCid } from "../src/io/publish.ts";
 import { RUN_MAX_AGE_MS, UNREADABLE_FOR_MS, verdict } from "../src/liveness.ts";
-import { manualParams } from "../src/manual.ts";
+import { manualParams } from "../src/manual-run.ts";
 import { hostnameReport, publishCheck, publishLines, toPublish } from "../src/report.ts";
 import {
   checkHostname,
+  generateNetwork,
   HostnameDriftError,
+  PinMismatchError,
+  pinNetwork,
   pointHostname,
   publishMode,
   TipMovedError,
 } from "../src/run.ts";
 import { route, touchesRegistryInputs } from "../src/webhook.ts";
+import {
+  MAINNET_HEAD,
+  MAINNET_HEAD_PARENT,
+  fakeFetch,
+  flipByte,
+  realLayerBytes,
+} from "./helpers.js";
 
 const config = { sourceRepo: "centrifuge/protocol-internal", sourceBranch: "live-v3.3" };
 const repository = { full_name: config.sourceRepo };
@@ -549,4 +561,155 @@ test("a manual run takes a CID only as the canonical CIDv1 a layer is named by",
       assert.match(result, new RegExp(field), `${field}: the refusal names the field`);
     }
   }
+});
+/** An R2 bucket in memory, holding text or bytes by key. */
+function fakeBucket(objects = {}) {
+  const store = new Map(Object.entries(objects));
+  const bytesOf = (value) => (typeof value === "string" ? new TextEncoder().encode(value) : value);
+  return {
+    store,
+    get: async (key) => {
+      if (!store.has(key)) return null;
+      const bytes = bytesOf(store.get(key));
+      return {
+        arrayBuffer: async () => bytes.slice().buffer,
+        text: async () => new TextDecoder().decode(bytes),
+        json: async () => JSON.parse(new TextDecoder().decode(bytes)),
+      };
+    },
+    put: async (key, value) => {
+      store.set(key, value);
+    },
+  };
+}
+
+/** The run's config past the hostname steps: an empty bucket, a GitHub that has every tag. */
+function runConfigOf(liveCid, objects = {}) {
+  return {
+    ...hostnameConfig(liveCid),
+    gh: async () => ({}),
+    bucket: fakeBucket(objects),
+    sourceRepo: "centrifuge/protocol-internal",
+    pinataJwt: "jwt",
+  };
+}
+
+/** Routes every fetch of a test to `impl`, which the test may swap. */
+function mockFetch(t) {
+  const holder = { impl: fakeFetch({}).fetchImpl };
+  t.mock.method(globalThis, "fetch", (...args) => holder.impl(...args));
+  return holder;
+}
+
+const mainnetEnv = envTreeOf({
+  "mainnet/ethereum.json": JSON.stringify({
+    network: { chainId: 1, environment: "mainnet" },
+    contracts: {
+      hub: {
+        address: "0x0000000000000000000000000000000000000001",
+        blockNumber: 1,
+        version: "v3.3.0",
+      },
+    },
+  }),
+});
+
+test("a tip that cannot be read refuses generation in every mode, for good when its bytes are not the CID's", async (t) => {
+  const fetchImpl = mockFetch(t);
+  const tampered = flipByte(realLayerBytes(MAINNET_HEAD_PARENT), 10);
+
+  for (const mode of ["auto", "delta", "patch", "full"]) {
+    for (const source of [{}, { sourceCid: MAINNET_HEAD_PARENT }]) {
+      const tip = source.sourceCid ?? MAINNET_HEAD;
+      const generate = () =>
+        generateNetwork(runConfigOf(MAINNET_HEAD), "run", "mainnet", mainnetEnv, {
+          mode,
+          ...source,
+        });
+
+      // Every gateway is down: the step retries
+      fetchImpl.impl = fakeFetch({}).fetchImpl;
+      await assert.rejects(
+        generate,
+        (error) => error instanceof RefusedError && error.retryable && error.message.includes(tip),
+        `${mode} ${tip} while IPFS is down`,
+      );
+
+      // Every gateway serves bytes that are not the tip's: nothing to retry, nothing to publish
+      fetchImpl.impl = fakeFetch({
+        [MAINNET_HEAD]: tampered,
+        [MAINNET_HEAD_PARENT]: tampered,
+      }).fetchImpl;
+      const outcome = await generate();
+      assert.equal(outcome.publishable, false, `${mode} ${tip} tampered`);
+      assert.ok(outcome.refused.includes(tip), outcome.refused);
+    }
+  }
+});
+
+test("a pin whose CID does not name the layer the Worker sent is refused, before any hostname moves", async (t) => {
+  const text = JSON.stringify({ network: "mainnet", version: "v3.3.0", chains: {} });
+  const own = (await unixfsFileRoot(new TextEncoder().encode(text))).toString();
+  const forms = [];
+  const pinata = { cid: own };
+  mockFetch(t).impl = async (_url, init) => {
+    forms.push(init.body);
+    return { ok: true, json: async () => ({ data: { cid: pinata.cid } }) };
+  };
+  const config = runConfigOf("tip", { "runs/r/registry-mainnet.json": text });
+  const outcome = { network: "mainnet", liveCid: "tip" };
+
+  assert.equal(await pinNetwork(config, "r", outcome, "sha"), own);
+  assert.equal(forms[0].get("cid_version"), "v1"); // the profile verifyLayer rebuilds
+
+  for (const other of [MAINNET_HEAD, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"]) {
+    pinata.cid = other;
+    await assert.rejects(
+      () => pinNetwork(config, "r", outcome, "sha"),
+      (error) => error instanceof PinMismatchError && error.message.includes(other),
+    );
+  }
+});
+
+test("POST /runs refuses what a run would refuse, and what a run could not tell", () => {
+  const cid = MAINNET_HEAD;
+  for (const [body, accepted] of [
+    [{ kind: "preview" }, true],
+    [{ kind: "deploy" }, false],
+    [{ kind: "publish", networks: ["devnet"] }, false],
+    [{ kind: "publish", mode: "snapshot" }, false],
+    [{ kind: "publish", mode: "full" }, false], // both networks, so mainnet
+    [{ kind: "publish", mode: "full", networks: ["mainnet"] }, false],
+    [{ kind: "publish", mode: "full", networks: ["testnet"] }, true],
+    [{ kind: "preview", sourceCid: cid }, false], // needs the one network to build on it
+    [{ kind: "preview", sourceCid: cid, networks: ["mainnet", "testnet"] }, false],
+    [{ kind: "preview", sourceCid: "not-a-cid", networks: ["mainnet"] }, false],
+    [{ kind: "preview", sourceCid: cid, networks: ["mainnet"] }, true],
+    [{ kind: "preview", sha: "abc123" }, true],
+    [{ kind: "publish", sha: "abc123" }, false],
+    [{ kind: "publish", acceptLiveCid: cid, networks: ["mainnet"] }, true],
+    [{ kind: "publish", acceptLiveCid: cid }, false],
+    [{ kind: "preview", acceptLiveCid: cid, networks: ["mainnet"] }, false],
+  ]) {
+    const result = manualParams(body);
+    assert.equal(typeof result === "object", accepted, `${JSON.stringify(body)}: ${result}`);
+  }
+
+  // What a run receives: only what the body set, and a false flag is not a flag
+  assert.deepEqual(
+    manualParams({
+      kind: "publish",
+      networks: ["testnet"],
+      mode: "full",
+      allowHistoryDrop: true,
+      allowPartialChain: false,
+    }),
+    {
+      kind: "publish",
+      reason: "manual",
+      networks: ["testnet"],
+      mode: "full",
+      allowHistoryDrop: true,
+    },
+  );
 });
