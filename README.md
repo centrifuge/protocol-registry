@@ -92,8 +92,10 @@ A config holds `network`, `adapters` and `contracts`, and every contract records
 `blockNumber`. It records no deployment metadata: a chain's `deployment.startBlock` is the earliest
 `blockNumber` among the contracts its config records, derived when a layer is generated.
 
-A contract's `version` resolves to a git tag (`3` → `v3`, `v3.1` → `v3.1.0`, or the alias), and its
-ABI is built from that tag. An alias is the deployment's own account of the source it ran, and nothing
+A contract's `version` resolves to a git tag (`3` → `v3`, `v3.1` → `v3.1.0`, a snapshot label
+`v3.3+p1.1` → `v3.3.0+p1.1.0`, or the alias), and its ABI is built from that tag. A snapshot label
+names the core and peripheral versions of the main snapshot a contract was deployed from; only its core
+half reaches the registry's `version`, so a peripheral-only release publishes as a `patch`. An alias is the deployment's own account of the source it ran, and nothing
 can check it against what was deployed: deploy, tag that commit, point the alias at the tag. The check
 holds that the tag exists and that every alias redirects a version some contract records. Retire an
 alias by re-pointing it at the release tag, never by deleting it: without the entry, the version

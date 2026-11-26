@@ -3,7 +3,8 @@
  * top-level `version` is derived from env.
  *
  * Env records labels in several historical shapes (`3`, `v3.1`, `v3.1.0`, `v3.3.0-rc2` via an alias),
- * while the published registry always carries a normalized `vX.Y.Z`.
+ * and snapshot labels `v<core>+p<peripheral>` (`v3.3+p1.1`), while the published registry always
+ * carries a normalized `vX.Y.Z`: the core half alone.
  */
 
 import type { ContractEntry, EnvConfig, LayerChain } from "./types.ts";
@@ -16,6 +17,9 @@ import type { ContractEntry, EnvConfig, LayerChain } from "./types.ts";
  * once that exists would quietly serve the release's ABIs for code that was never it. Where the alias
  * names a tag that does not exist, the resolution fails and says so.
  *
+ * A snapshot label has one candidate, both halves padded to three numbers (`v3.3+p1.1` →
+ * `v3.3.0+p1.1.0`), since that is the only shape its tag is cut in.
+ *
  * @param aliases - version → git tag, from `env/<dir>/versions.json`
  */
 export function versionTagCandidates(
@@ -24,6 +28,7 @@ export function versionTagCandidates(
 ): string[] {
   const alias = aliases?.[version];
   if (alias) return [alias];
+  if (version.includes("+")) return [snapshotTag(version)];
 
   const candidates = [version];
   if (!version.startsWith("v")) {
@@ -32,6 +37,16 @@ export function versionTagCandidates(
   const withPatch = candidates.map((c) => `${c}.0`);
   candidates.push(...withPatch);
   return candidates;
+}
+
+const SNAPSHOT_LABEL = /^v(\d+(?:\.\d+){0,2})\+p(\d+(?:\.\d+){0,2})$/;
+
+/** `v3.3+p1.1` → `v3.3.0+p1.1.0`; a label of any other shape is its own (unresolvable) candidate. */
+function snapshotTag(version: string): string {
+  const match = SNAPSHOT_LABEL.exec(version);
+  if (!match) return version;
+  const pad = (half: string) => [...half.split("."), "0", "0"].slice(0, 3).join(".");
+  return `v${pad(match[1])}+p${pad(match[2])}`;
 }
 
 /**
@@ -59,9 +74,9 @@ export async function resolveVersionTag(
   );
 }
 
-/** "v3.1" → [3, 1], "3" → [3] */
+/** "v3.1" → [3, 1], "3" → [3], "v3.3+p1.1" → [3, 3] */
 function parseVersion(v: string): number[] {
-  return v.replace(/^v/i, "").split(".").map(Number);
+  return v.replace(/^v/i, "").split("+")[0].split(".").map(Number);
 }
 
 /** > 0 if a > b, < 0 if a < b, 0 if equal. */
@@ -96,9 +111,9 @@ export function getVersionFromChain(chain: EnvConfig): string | null {
   return null;
 }
 
-/** Env-style protocol labels ("3", "v3.1", "v3.1.0") as [major, minor, patch], for ordering. */
+/** Env-style protocol labels ("3", "v3.1", "v3.1.0", "v3.3+p1.1") as the core [major, minor, patch]. */
 function protocolVersionTuple(s: string): [number, number, number] {
-  const n = String(s).replace(/^v/i, "").trim().split("-")[0];
+  const n = String(s).replace(/^v/i, "").trim().split(/[-+]/)[0];
   const parts = n.split(".").map((p) => parseInt(p, 10));
   return [
     Number.isFinite(parts[0]) ? parts[0] : 0,
