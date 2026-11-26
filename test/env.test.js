@@ -12,7 +12,13 @@ import {
   versionAliasesOf,
 } from "../src/core/env.ts";
 import { validateEnvFile, validateEnvTree } from "../src/core/env-schema.ts";
-import { versionTagCandidates } from "../src/core/versions.ts";
+import {
+  getVersionFromChain,
+  maxProtocolVersionLabel,
+  normalizeRegistryVersionToVSemver,
+  resolveVersionTag,
+  versionTagCandidates,
+} from "../src/core/versions.ts";
 
 const CONFIG = JSON.stringify({ network: { chainId: 1 } });
 
@@ -125,6 +131,49 @@ test("a version the aliases do not name resolves as before", () => {
   assert.deepEqual(versionTagCandidates("v3.1", aliases), ["v3.1", "v3.1.0"]);
   assert.deepEqual(versionTagCandidates("3", aliases), ["3", "v3", "3.0", "v3.0"]);
   assert.deepEqual(versionTagCandidates("v3.1"), ["v3.1", "v3.1.0"]);
+});
+
+test("a snapshot label resolves to its tag with both halves padded", () => {
+  assert.deepEqual(versionTagCandidates("v3.3+p1.1"), ["v3.3.0+p1.1.0"]);
+  assert.deepEqual(versionTagCandidates("v3.3.1+p1"), ["v3.3.1+p1.0.0"]);
+  assert.deepEqual(versionTagCandidates("v3.3.0+p1.10.2"), ["v3.3.0+p1.10.2"]);
+});
+
+test("a snapshot label of any other shape is its own candidate, so it fails to resolve", () => {
+  assert.deepEqual(versionTagCandidates("v3.3+x1.1"), ["v3.3+x1.1"]);
+  assert.deepEqual(versionTagCandidates("v3.3.0-rc1+p1.1"), ["v3.3.0-rc1+p1.1"]);
+});
+
+test("an alias still wins over a snapshot label", () => {
+  assert.deepEqual(versionTagCandidates("v3.3+p1.1", { "v3.3+p1.1": "v3.3.0-rc5" }), [
+    "v3.3.0-rc5",
+  ]);
+});
+
+test("resolveVersionTag finds a snapshot label's padded tag", async () => {
+  const tags = new Set(["v3.3.0", "v3.3.0+p1.0.0", "v3.3.0+p1.1.0"]);
+  const tagExists = async (tag) => tags.has(tag);
+  assert.equal(await resolveVersionTag("v3.3+p1.1", {}, tagExists), "v3.3.0+p1.1.0");
+  assert.equal(await resolveVersionTag("v3.3", {}, tagExists), "v3.3.0");
+  await assert.rejects(resolveVersionTag("v3.3+p1.2", {}, tagExists), /Tried: v3\.3\.0\+p1\.2\.0/);
+});
+
+test("the registry version of a snapshot label is its core half", () => {
+  assert.equal(normalizeRegistryVersionToVSemver("v3.3+p1.1"), "v3.3.0");
+  assert.equal(normalizeRegistryVersionToVSemver("v3.3.1+p1.2"), "v3.3.1");
+  assert.equal(
+    normalizeRegistryVersionToVSemver(maxProtocolVersionLabel(["v3.3", "v3.3+p1.1"])),
+    "v3.3.0",
+  );
+  assert.equal(maxProtocolVersionLabel(["v3.3.1+p1.1", "v3.3+p1.2"]), "v3.3.1+p1.1");
+});
+
+test("a config's version compares snapshot labels by their core half", () => {
+  const chain = (...versions) => ({
+    contracts: Object.fromEntries(versions.map((version, i) => [`c${i}`, { version }])),
+  });
+  assert.equal(getVersionFromChain(chain("v3.3", "v3.3+p1.1")), "v3.3");
+  assert.equal(getVersionFromChain(chain("v3.3+p1.1", "v3.3.1+p1.1")), "v3.3.1+p1.1");
 });
 
 test("a directory without retired.json declares nothing", () => {
